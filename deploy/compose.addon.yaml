@@ -26,6 +26,8 @@ services:
       ASTRBOT_BRIDGE_URL: http://astrbot:9186
       BRIDGE_TOKEN: ${BRIDGE_TOKEN:?Run deploy/setup.sh first}
       BRIDGE_FILES_ROOT: /bridge-files
+      BRIDGE_MAX_FILE_BYTES: ${BRIDGE_MAX_FILE_BYTES:-20971520}
+      BRIDGE_MAX_FILES: ${BRIDGE_MAX_FILES:-4}
     expose: ["8088"]
     volumes:
       - ${INSTALL_ROOT:?}/state/qwenpaw/working:/app/working

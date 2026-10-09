@@ -58,6 +58,67 @@ class RoutesTest(unittest.TestCase):
 
 
 class CollectorTest(unittest.TestCase):
+    @staticmethod
+    def sent_file(tool="send_file_to_user", path="file:///bridge-files/ab_" + "a" * 32 + "/outbound/report.pdf", **changes):
+        return {
+            "object": "message", "type": "plugin_call_output", "role": "tool", "status": "completed",
+            "content": [{"type": "data", "data": {"name": tool, "output": json.dumps([
+                {"type": "data", "source": {"type": "url", "url": path, "media_type": "application/pdf"}},
+                {"type": "text", "text": "private tool diagnostic"},
+            ])}}], **changes,
+        }
+
+    def test_native_send_file_is_retained_when_final_snapshot_contains_only_text(self):
+        collector = AssistantCollector()
+        event = self.sent_file()
+        collector.feed(event)
+        collector.feed(event)  # Reconnected stream copy does not duplicate files.
+        collector.feed(message())
+        collector.feed({"object": "response", "status": "completed", "output": [message(id=None)]})
+        blocks = collector.result()
+        self.assertEqual([block["type"] for block in blocks], ["text", "file"])
+        self.assertTrue(blocks[1]["file_url"].endswith("/outbound/report.pdf"))
+        self.assertNotIn("private tool diagnostic", json.dumps(blocks))
+
+    def test_only_explicit_completed_file_send_tool_can_release_media(self):
+        collector = AssistantCollector()
+        for event in [self.sent_file(tool="browser_screenshot"), self.sent_file(status="in_progress"),
+                      self.sent_file(role="assistant"), self.sent_file(type="reasoning")]:
+            collector.feed(event)
+        collector.feed({"object": "response", "status": "completed", "output": [message()]})
+        self.assertEqual(collector.result(), [{"type": "text", "text": "完成"}])
+
+    def test_native_media_in_final_snapshot_and_stream_are_deduplicated(self):
+        collector = AssistantCollector()
+        event = self.sent_file()
+        path = json.loads(event["content"][0]["data"]["output"])[0]["source"]["url"]
+        collector.feed(event)
+        collector.feed({"object": "response", "status": "completed", "output": [
+            message(content=[{"type": "file", "file_url": path}]), event,
+        ]})
+        self.assertEqual(collector.result(), [{"type": "file", "file_url": path}])
+
+    def test_native_send_media_count_is_bounded(self):
+        collector = AssistantCollector()
+        for index in range(4):
+            collector.feed(self.sent_file(path=f"/outbound/{index}.pdf"))
+        with self.assertRaisesRegex(BridgeError, "four attachments"):
+            collector.feed(self.sent_file(path="/outbound/5.pdf"))
+
+    def test_native_data_blocks_are_classified_by_mime_without_releasing_inline_data(self):
+        for mime, kind, field in [("image/png", "image", "image_url"), ("audio/mpeg", "audio", "data"),
+                                  ("video/mp4", "video", "video_url"), ("text/plain", "file", "file_url")]:
+            with self.subTest(mime=mime):
+                event = self.sent_file()
+                output = json.loads(event["content"][0]["data"]["output"])
+                output[0]["source"]["media_type"] = mime
+                output.append({"type": "data", "source": {"type": "base64", "data": "private", "media_type": mime}})
+                event["content"][0]["data"]["output"] = json.dumps(output)
+                collector = AssistantCollector()
+                collector.feed(event)
+                collector.feed({"object": "response", "status": "completed", "output": []})
+                self.assertEqual(collector.result(), [{"type": kind, field: output[0]["source"]["url"]}])
+
     def test_ignores_reasoning_and_tool_outputs_and_deduplicates_snapshot(self):
         collector = AssistantCollector()
         collector.feed(message("private reasoning", type="reasoning"))

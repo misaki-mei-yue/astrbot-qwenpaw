@@ -1,7 +1,7 @@
 """Official QwenPaw plugin registration entry point."""
 
 from .channel import AstrBotChannel
-from .tools import astrbot_call_tool, astrbot_list_tools, configure_tools
+from .tools import astrbot_call_tool, astrbot_list_tools, astrbot_media_workspace, astrbot_send_file, configure_tools
 
 
 class AstrBotBridgePlugin:
@@ -33,6 +33,20 @@ class AstrBotBridgePlugin:
             tool_name="astrbot_call_tool",
             tool_func=astrbot_call_tool,
             description="调用当前 AstrBot 会话允许使用的插件工具。",
+            enabled=True,
+            tool_type="network",
+        )
+        api.register_tool(
+            tool_name="astrbot_media_workspace",
+            tool_func=astrbot_media_workspace,
+            description="获取当前会话的共享附件工作区；将生成文件保存到outbound后再发送。",
+            enabled=True,
+            tool_type="file",
+        )
+        api.register_tool(
+            tool_name="astrbot_send_file",
+            tool_func=astrbot_send_file,
+            description="发送当前会话outbound中的真实本地文件，不接受远程URL或其他用户文件。",
             enabled=True,
             tool_type="network",
         )

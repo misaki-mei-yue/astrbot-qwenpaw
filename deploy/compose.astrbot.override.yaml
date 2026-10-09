@@ -10,6 +10,11 @@ services:
       OWNER_USER_IDS: ${OWNER_USER_IDS:-}
       TOOL_ALLOWLIST: ${TOOL_ALLOWLIST:-}
       BRIDGE_FILES_ROOT: /bridge-files
+      BRIDGE_MAX_FILE_BYTES: ${BRIDGE_MAX_FILE_BYTES:-20971520}
+      BRIDGE_MAX_FILES: ${BRIDGE_MAX_FILES:-4}
+      BRIDGE_MEDIA_TIMEOUT: ${BRIDGE_MEDIA_TIMEOUT:-60}
+      BRIDGE_SOURCE_ROOTS: ${BRIDGE_SOURCE_ROOTS:-/AstrBot/data/temp}
+      BRIDGE_NAPCAT_HOSTS: ${BRIDGE_NAPCAT_HOSTS:-napcat}
     volumes:
       - ${PROJECT_SOURCE:?}/astrbot_plugin_qwenpaw_bridge:/AstrBot/data/plugins/astrbot_plugin_qwenpaw_bridge:ro
       - ${INSTALL_ROOT:?}/state/bridge-files:/bridge-files

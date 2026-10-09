@@ -31,6 +31,10 @@ class PrepareTests(unittest.TestCase):
             self.assertEqual(first["OWNER_USER_IDS"], "")
             self.assertEqual(first["TOOL_ALLOWLIST"], "")
             self.assertEqual(first["QWENPAW_AGENT_ID"], "default")
+            self.assertEqual(first["BRIDGE_MAX_FILE_BYTES"], "20971520")
+            self.assertEqual(first["BRIDGE_MAX_FILES"], "4")
+            self.assertEqual(first["BRIDGE_SOURCE_ROOTS"], "/AstrBot/data/temp")
+            self.assertEqual(first["BRIDGE_NAPCAT_HOSTS"], "napcat")
             self.assertEqual(len(set(first[key] for key in prepare.SECRET_KEYS)), 3)
             nap = root / "state/napcat/config/onebot11.json"
             original = nap.read_bytes()
@@ -121,6 +125,28 @@ class PrepareTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "filesystem root"):
             prepare.prepare("fresh", Path(root) / "does-not-exist" / "..")
 
+    def test_smaller_media_limits_survive_and_excess_is_rejected_without_reset(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder) / "install"
+            original = prepare.prepare("fresh", root)
+            env_path = root / ".env"
+            env = prepare.parse_env(env_path)
+            env.update(BRIDGE_MAX_FILE_BYTES="1024", BRIDGE_MAX_FILES="1")
+            env_path.write_text("\n".join(f"{k}={prepare.env_value(v)}" for k, v in env.items()) + "\n", encoding="utf-8")
+            reduced = prepare.prepare("fresh", root)
+            self.assertEqual(reduced["BRIDGE_MAX_FILE_BYTES"], "1024")
+            self.assertEqual(reduced["BRIDGE_MAX_FILES"], "1")
+            for key in prepare.SECRET_KEYS:
+                self.assertEqual(reduced[key], original[key])
+            for key, value in (("BRIDGE_MAX_FILE_BYTES", "20971521"), ("BRIDGE_MAX_FILES", "5"), ("BRIDGE_MAX_FILES", "0"), ("BRIDGE_MAX_FILES", "-1")):
+                with self.subTest(key=key, value=value):
+                    invalid = dict(reduced, **{key: value})
+                    content = "\n".join(f"{k}={prepare.env_value(v)}" for k, v in invalid.items()) + "\n"
+                    env_path.write_text(content, encoding="utf-8")
+                    with self.assertRaisesRegex(ValueError, key):
+                        prepare.prepare("fresh", root)
+                    self.assertEqual(env_path.read_text(encoding="utf-8"), content)
+
 
 @unittest.skipIf(yaml is None, "Install PyYAML to validate Compose structures")
 class ComposeTests(unittest.TestCase):
@@ -167,6 +193,23 @@ class ComposeTests(unittest.TestCase):
         self.assertFalse(any(volume.endswith(":/AstrBot/data") for volume in astrbot["volumes"]))
         self.assertEqual(override["networks"]["combined"]["external"], True)
 
+    def test_media_contract_is_identical_in_fresh_and_existing_services(self):
+        fresh = self.load("compose.yaml")["services"]
+        addon = self.load("compose.addon.yaml")["services"]
+        override = self.load("compose.astrbot.override.yaml")["services"]
+        for service in (fresh["astrbot"], fresh["qwenpaw"], addon["qwenpaw"], override["astrbot"]):
+            env = service["environment"]
+            self.assertEqual(env["BRIDGE_FILES_ROOT"], "/bridge-files")
+            self.assertEqual(env["BRIDGE_MAX_FILE_BYTES"], "${BRIDGE_MAX_FILE_BYTES:-20971520}")
+            self.assertEqual(env["BRIDGE_MAX_FILES"], "${BRIDGE_MAX_FILES:-4}")
+        for service in (fresh["astrbot"], override["astrbot"]):
+            env = service["environment"]
+            self.assertEqual(env["BRIDGE_SOURCE_ROOTS"], "${BRIDGE_SOURCE_ROOTS:-/AstrBot/data/temp}")
+            self.assertEqual(env["BRIDGE_NAPCAT_HOSTS"], "${BRIDGE_NAPCAT_HOSTS:-napcat}")
+        for services in (fresh, addon):
+            mount = [v for v in services["napcat"]["volumes"] if ":/bridge-files" in v]
+            self.assertEqual(mount, ["${INSTALL_ROOT:?}/state/bridge-files:/bridge-files:ro"])
+
 
 @unittest.skipUnless(shutil.which("docker"), "Docker CLI is optional; Compose parsing needs no daemon")
 class ComposeCLITests(unittest.TestCase):
@@ -200,6 +243,8 @@ class ComposeCLITests(unittest.TestCase):
             for name in ("compose.yaml", "compose.addon.yaml"):
                 compose = self.render(env, [ROOT / "deploy" / name])
                 self.assertEqual(compose["services"]["qwenpaw"]["environment"]["QWENPAW_AGENT_ID"], "default")
+                self.assertEqual(compose["services"]["qwenpaw"]["environment"]["BRIDGE_MAX_FILE_BYTES"], "20971520")
+                self.assertEqual(compose["services"]["qwenpaw"]["environment"]["BRIDGE_MAX_FILES"], "4")
                 self.assertNotIn("ports", compose["services"]["qwenpaw"])
                 for service in compose["services"].values():
                     for port in service.get("ports", []):

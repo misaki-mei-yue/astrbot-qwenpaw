@@ -2,7 +2,7 @@
   "id": "astrbot-bridge",
   "name": "AstrBot Bridge",
   "description": "AstrBot 微信/QQ 主动通知和使用可信会话上下文的插件工具桥接。",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "channel",
   "entry": {"backend": "plugin.py"},
   "qwenpaw_version": {"min": "2.2.1", "max": "2.3.0"},

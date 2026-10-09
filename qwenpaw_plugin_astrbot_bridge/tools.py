@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import os
 import re
+import asyncio
 from typing import Any
 from uuid import uuid4
 
 from .bridge_client import BridgeClient, BridgeError, BridgeSettings, config_value
 from .turn_context import get_turn_id
+from .media import media_descriptor, media_workspace
 
 _plugin_config: dict[str, Any] = {}
 
@@ -90,3 +92,37 @@ async def astrbot_call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[s
             "arguments": arguments,
         },
     )
+
+
+async def astrbot_media_workspace() -> dict[str, Any]:
+    """Get this conversation's shared inbound/outbound directories and limits.
+
+    Generate files in outbound before sending. Never use another conversation's
+    directory. The local paths are for file tools, not public download links.
+    """
+    session_id, _ = trusted_route()
+    settings = tool_settings()
+    return await asyncio.to_thread(media_workspace, settings.files_dir, session_id, settings.max_file_bytes, settings.max_files)
+
+
+async def astrbot_send_file(path: str, kind: str = "file") -> dict[str, Any]:
+    """Send one existing file from this conversation's shared outbound directory.
+
+    path must be a local outbound file returned by astrbot_media_workspace,
+    or outbound/filename. kind is file, image, video or audio. No arbitrary
+    URL, data URL, other workspace or other user's file can be sent. This tool
+    also works in proactive jobs: identity comes from the runtime, not arguments.
+    Gateway acceptance means submitted to the adapter, not a platform receipt.
+    """
+    session_id, user_id = trusted_route()
+    settings = tool_settings()
+    content = await asyncio.to_thread(media_descriptor, settings.files_dir, session_id, path, kind, max_file_bytes=settings.max_file_bytes)
+    # Created once per tool invocation; BridgeClient serializes once and keeps
+    # exactly this ID and body during HTTP retries.
+    result = await BridgeClient(settings).post("/v1/deliver", {
+        "delivery_id": str(uuid4()), "session_id": session_id, "user_id": user_id,
+        "content": [content],
+    })
+    if result.get("accepted") is not True:
+        raise BridgeError("The gateway did not accept this delivery or its result is uncertain; do not repeat the operation automatically.")
+    return result

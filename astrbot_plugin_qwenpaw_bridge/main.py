@@ -1,6 +1,6 @@
 """AstrBot 4.25 adapter for the private QwenPaw bridge.
 
-Only owner text conversations are forwarded in this first release. Existing
+Owner text and supported media conversations are forwarded. Existing
 commands retain AstrBot's normal permission checks and dispatch. Tool callbacks
 are bound to the original live event; a persisted route permits later text
 delivery, but does not permit a scheduled job to impersonate an expired event.
@@ -23,10 +23,11 @@ from aiohttp import web
 
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, MessageChain, ResultContentType, filter
-from astrbot.api.message_components import Plain
+from astrbot.api.message_components import File, Image, Plain, Record, Video
 from astrbot.api.star import Context, Star
 
 from .bridge_core import BridgeStore, QwenPawClient
+from .media_bridge import MediaBridge, MediaFailure, provider_component
 
 
 class BridgeFault(Exception):
@@ -70,23 +71,6 @@ def _turn_nonce(payload: dict) -> str:
     return value
 
 
-def _text_blocks(content: Any) -> list[str]:
-    if not isinstance(content, list) or not content or len(content) > 100:
-        raise BridgeFault(400, "invalid_content")
-    texts: list[str] = []
-    for block in content:
-        if not isinstance(block, dict) or block.get("type") != "text":
-            raise BridgeFault(415, "only_text_content_supported")
-        text = block.get("text")
-        if not isinstance(text, str) or len(text) > 100000:
-            raise BridgeFault(400, "invalid_text")
-        if text.strip():
-            texts.append(text)
-    if not texts:
-        raise BridgeFault(400, "empty_content")
-    return texts
-
-
 def _has_selected_command(event: Any) -> bool:
     params = event.get_extra("handlers_parsed_params", {}) or {}
     handlers = event.get_extra("activated_handlers", []) or []
@@ -113,8 +97,25 @@ class QwenPawBridge(Star):
         self._approval_task: asyncio.Task | None = None
         self._active: dict[str, ActiveTurn] = {}
         self._chat_locks: dict[str, asyncio.Lock] = {}
+        self._delivery_locks: dict[str, asyncio.Lock] = {}
         self.chat_timeout = max(30, min(int(config.get("chat_timeout", 900)), 3600))
         self.tool_timeout = max(5, min(int(config.get("tool_timeout", 120)), 600))
+        roots = _setting_list(config, "source_roots", "BRIDGE_SOURCE_ROOTS")
+        if not roots:
+            try:
+                from astrbot.core.utils.astrbot_path import get_astrbot_temp_path
+                roots = {get_astrbot_temp_path()}
+            except ImportError:
+                roots = {"/AstrBot/data/temp"}
+        self._media = MediaBridge(
+            os.environ.get("BRIDGE_FILES_ROOT", config.get("files_root", "/bridge-files")),
+            list(roots),
+            max_bytes=int(os.environ.get("BRIDGE_MAX_FILE_BYTES", config.get("max_file_bytes", 20971520))),
+            max_files=int(os.environ.get("BRIDGE_MAX_FILES", config.get("max_files", 4))),
+            napcat_hosts=_setting_list(config, "napcat_hosts", "BRIDGE_NAPCAT_HOSTS") or {"napcat"},
+            timeout=int(os.environ.get("BRIDGE_MEDIA_TIMEOUT", config.get("media_timeout", 60))),
+            component_types={"text": Plain, "image": Image, "file": File, "video": Video, "audio": Record},
+        )
 
     async def initialize(self):
         if not self.enabled:
@@ -146,7 +147,7 @@ class QwenPawBridge(Star):
             await self.terminate()
             raise
         self._approval_task = asyncio.create_task(self._poll_approvals())
-        logger.info("QwenPaw bridge ready on private port 9186; text transport only.")
+        logger.info("QwenPaw bridge ready on private port 9186; text and media transport enabled.")
 
     async def terminate(self):
         self.enabled = False
@@ -162,6 +163,8 @@ class QwenPawBridge(Star):
             await self._client.close()
             self._client = None
         self._active.clear()
+        self._delivery_locks.clear()
+        self._chat_locks.clear()
         if self._store:
             self._store.close()
             self._store = None
@@ -259,7 +262,7 @@ class QwenPawBridge(Star):
         return {tool.name: tool for tool in selected.tools}
 
     async def _health(self, request: web.Request):
-        return web.json_response({"ready": bool(self._client and self._store), "transport": "text"})
+        return web.json_response({"ready": bool(self._client and self._store), "transport": "text_and_media"})
 
     async def _tools_list(self, request: web.Request):
         payload = await self._payload(request)
@@ -385,29 +388,31 @@ class QwenPawBridge(Star):
         payload = await self._payload(request)
         sid, user, route = self._route(payload)
         delivery_id = _identifier(payload, "delivery_id")
-        texts = _text_blocks(payload.get("content"))
         key = sid + ":" + delivery_id
-        receipt = self._completed_receipt("delivery", key)
-        if receipt is not None:
-            return web.json_response(receipt)
-        if not self._store.claim("delivery", key):
-            raise BridgeFault(409, "delivery_already_in_progress_or_uncertain")
-        result = {"accepted": False, "session_id": sid}
-        try:
-            matched = await self.context.send_message(
-                route["origin"], MessageChain(chain=[Plain(text) for text in texts])
-            )
-            result = {
-                "accepted": bool(matched), "session_id": sid,
-                "delivery_status": "submitted_to_adapter" if matched else "route_unavailable",
-            }
-            if not matched:
-                result["error"] = "platform_route_unavailable"
-        except Exception:
-            # A platform may have delivered part of a chain before reporting failure.
-            result["error"] = "delivery_failed_or_uncertain_do_not_repeat"
-        self._store.finish("delivery", key, result)
-        return web.json_response(result)
+        async with self._delivery_locks.setdefault(sid, asyncio.Lock()):
+            receipt = self._completed_receipt("delivery", key)
+            if receipt is not None:
+                return web.json_response(receipt)
+            try:
+                chain = await self._media.output_components(sid, payload.get("content"), route["platform"])
+            except MediaFailure as exc:
+                raise BridgeFault(400, str(exc)) from None
+            if not self._store.claim("delivery", key):
+                raise BridgeFault(409, "delivery_already_in_progress_or_uncertain")
+            result = {"accepted": False, "session_id": sid}
+            try:
+                matched = await self.context.send_message(route["origin"], MessageChain(chain=chain))
+                result = {
+                    "accepted": bool(matched), "session_id": sid,
+                    "delivery_status": "submitted_to_adapter" if matched else "route_unavailable",
+                }
+                if not matched:
+                    result["error"] = "platform_route_unavailable"
+            except Exception:
+                # A platform may have delivered part of a chain before reporting failure.
+                result["error"] = "delivery_failed_or_uncertain_do_not_repeat"
+            self._store.finish("delivery", key, result)
+            return web.json_response(result)
 
     @filter.command("paw")
     async def paw_command(self, event: AstrMessageEvent, action: str = "", request_id: str = ""):
@@ -502,13 +507,19 @@ class QwenPawBridge(Star):
             yield event.plain_result("QwenPaw 桥接尚未就绪。")
             event.stop_event()
             return
-        if any(type(segment).__name__ in {"Image", "Record", "Video", "File"} for segment in event.get_messages()):
-            yield event.plain_result("本版桥接暂仅支持文本；照片、语音、视频和文件尚未转发。请先放到共享工作区，再用文字说明路径。")
+        media = []
+        for segment in event.get_messages():
+            for cls, kind in ((Image, "image"), (Record, "audio"), (Video, "video"), (File, "file")):
+                if isinstance(segment, cls):
+                    media.append((kind, segment))
+                    break
+        if len(media) > self._media.max_files:
+            yield event.plain_result(f"每条消息最多转发{self._media.max_files}个附件，请分开发送。")
             event.stop_event()
             return
         text = event.get_message_str().strip()
-        if not text:
-            yield event.plain_result("本版桥接需要一条文本消息。")
+        if not text and not media:
+            yield event.plain_result("桥接需要文本或支持的图片、文件、视频、音频附件。")
             event.stop_event()
             return
         if len(text) > 32000:
@@ -532,17 +543,40 @@ class QwenPawBridge(Star):
                 return
             turn = ActiveTurn(event, event.get_sender_id(), time.monotonic() + self.chat_timeout + 30)
             self._active[sid] = turn
+            submitted = False
             try:
-                content = await self._client.chat(sid, event.get_sender_id(), text, turn_id=turn.turn_id)
-                texts = _text_blocks(content)
-                result = event.chain_result([Plain(part) for part in texts])
+                native_content = []
+                if text:
+                    native_content.append({"type": "text", "text": text})
+                for kind, segment in media:
+                    asset = await self._media.import_component(sid, kind, provider_component(event, segment, kind))
+                    native_content.append(asset.native())
+                submitted = True
+                content = await self._client.chat(
+                    sid, event.get_sender_id(), text or "请处理本条消息的附件。",
+                    content=native_content, turn_id=turn.turn_id,
+                )
+                chain = await self._media.output_components(sid, content, event.get_platform_name(), allow_native=True)
+                result = event.chain_result(chain)
                 yield result.set_result_content_type(ResultContentType.LLM_RESULT)
             except asyncio.CancelledError:
                 raise
+            except MediaFailure as exc:
+                logger.warning("QwenPaw media rejected: %s", str(exc))
+                if submitted:
+                    yield event.plain_result("返回的附件未通过安全检查，本次没有发送附件；请检查文件路径、大小和完整性。")
+                else:
+                    yield event.plain_result("附件无法安全读取或下载，本次未转发；请检查附件大小、来源路径和链接。")
             except Exception:
-                yield event.plain_result("QwenPaw 本次未返回可发送的文本。任务可能仍在执行，请勿重复提交；可查看后台状态。")
+                if submitted:
+                    yield event.plain_result("QwenPaw 本次未返回可发送的内容。任务可能仍在执行，请勿重复提交；可查看后台状态。")
+                else:
+                    yield event.plain_result("附件读取失败，本次未提交任务。请重新发送附件。")
             finally:
                 self._active.pop(sid, None)
                 if self._store:
-                    self._store.finish("chat", chat_key, {"status": "finished_or_uncertain"})
+                    if submitted:
+                        self._store.finish("chat", chat_key, {"status": "finished_or_uncertain"})
+                    else:
+                        self._store.fail("chat", chat_key)
                 event.stop_event()

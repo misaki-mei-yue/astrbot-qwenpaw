@@ -8,12 +8,17 @@ import inspect
 import sys
 import types
 import unittest
+import tempfile
+import hashlib
+import subprocess
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 from urllib.error import HTTPError, URLError
 
 from qwenpaw_plugin_astrbot_bridge.bridge_client import BridgeClient, BridgeError, BridgeSettings
 from qwenpaw_plugin_astrbot_bridge.turn_context import clear_turn_id, get_turn_id, set_turn_id
+from qwenpaw_plugin_astrbot_bridge.media import media_descriptor, media_workspace
 
 
 SESSION = "ab_" + "a" * 32
@@ -59,6 +64,9 @@ class RuntimeStub:
 class AdapterTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.runtime = RuntimeStub()
+        self.temp = tempfile.TemporaryDirectory()
+        self.media_root = Path(self.temp.name)
+        self.runtime.profile.channels.astrbot.files_dir = str(self.media_root)
         self.modules_patch = patch.dict(sys.modules, self.runtime.modules)
         self.modules_patch.start()
         self.env_patch = patch.dict(os.environ, {}, clear=True)
@@ -77,6 +85,13 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         clear_turn_id()
         self.modules_patch.stop()
         self.env_patch.stop()
+        self.temp.cleanup()
+
+    def media_file(self, name="report.txt", content=b"actual report bytes"):
+        workspace = media_workspace(str(self.media_root), SESSION)
+        path = Path(workspace["outbound_dir"]) / name
+        path.write_bytes(content)
+        return path
 
     def channel(self):
         channel = self.channel_module.AstrBotChannel.from_config(None, self.runtime.profile.channels.astrbot)
@@ -229,6 +244,17 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         calls = channel._client.post.call_args_list
         self.assertEqual(calls[0].args[1]["delivery_id"], calls[1].args[1]["delivery_id"])
 
+    async def test_gateway_false_acceptance_is_a_safe_proactive_error(self):
+        channel = self.channel()
+        channel._client.post.return_value = {
+            "accepted": False, "error": "private server diagnostics", "delivery_status": "route_unavailable",
+        }
+        with self.assertRaisesRegex(BridgeError, "do not repeat") as caught:
+            await channel.send_event(user_id="owner", session_id=SESSION, event=self.message())
+        self.assertNotIn("private", str(caught.exception))
+        self.assertEqual(len(channel._accepted), 0)
+        channel._client.post.assert_awaited_once()
+
     async def test_reasoning_tool_delta_and_user_are_never_sent(self):
         channel = self.channel()
         for changes in [
@@ -260,7 +286,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("private", encoded)
         self.assertNotIn("sensitivebase64", encoded)
         self.assertTrue(all(item["type"] == "text" for item in payload["content"]))
-        self.assertIn("控制台", encoded)
+        self.assertIn("共享工作区", encoded)
 
     async def test_no_native_input_is_accepted(self):
         with self.assertRaises(BridgeError):
@@ -281,8 +307,178 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         module.plugin.register(api)
         self.assertEqual(api.register_channel.call_args.kwargs["channel_class"].channel, "astrbot")
         self.assertEqual([call.kwargs["tool_name"] for call in api.register_tool.call_args_list],
-                         ["astrbot_list_tools", "astrbot_call_tool"])
+                         ["astrbot_list_tools", "astrbot_call_tool", "astrbot_media_workspace", "astrbot_send_file"])
         self.assertEqual([call.args[0].phase for call in api.register_runtime_hook.call_args_list], ["pre_dispatch", "finally"])
+
+    async def test_media_workspace_uses_true_root_and_allows_proactive_context(self):
+        clear_turn_id()
+        self.runtime.context.session_id = OTHER_SESSION
+        workspace = await self.tools.astrbot_media_workspace()
+        self.assertEqual(Path(workspace["outbound_dir"]), self.media_root.resolve() / SESSION / "outbound")
+        self.assertEqual(Path(workspace["inbound_dir"]), self.media_root.resolve() / SESSION / "inbound")
+        self.assertEqual(workspace["max_file_bytes"], 20971520)
+        self.assertEqual(workspace["max_attachments"], 4)
+        self.assertEqual(list(inspect.signature(self.tools.astrbot_media_workspace).parameters), [])
+
+    async def test_media_send_reads_real_bytes_and_uses_runtime_identity(self):
+        path = self.media_file()
+        clear_turn_id()
+        with patch.object(self.tools.BridgeClient, "post", new_callable=AsyncMock) as post:
+            post.return_value = {"accepted": True, "delivery_status": "submitted_to_adapter"}
+            await self.tools.astrbot_send_file("outbound/report.txt")
+        endpoint, payload = post.call_args.args
+        self.assertEqual(endpoint, "/v1/deliver")
+        self.assertEqual((payload["session_id"], payload["user_id"]), (SESSION, "owner"))
+        self.assertEqual(payload["content"], [{
+            "type": "file", "path": SESSION + "/outbound/report.txt", "filename": "report.txt",
+            "size": path.stat().st_size, "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        }])
+        self.assertTrue(payload["delivery_id"])
+        self.assertEqual(list(inspect.signature(self.tools.astrbot_send_file).parameters), ["path", "kind"])
+        with self.assertRaises(TypeError):
+            await self.tools.astrbot_send_file(str(path), user_id="someone-else")
+
+    async def test_media_send_false_acceptance_raises_without_automatic_resend(self):
+        path = self.media_file()
+        with patch.object(self.tools.BridgeClient, "post", new_callable=AsyncMock) as post:
+            post.return_value = {"accepted": False, "error": "private credentials or platform exception"}
+            with self.assertRaisesRegex(BridgeError, "do not repeat") as caught:
+                await self.tools.astrbot_send_file(str(path))
+            post.assert_awaited_once()
+        self.assertNotIn("private", str(caught.exception))
+
+    async def test_native_assistant_media_uses_same_descriptor_and_dedupe(self):
+        path = self.media_file("picture.png", b"image bytes fixture")
+        channel = self.channel()
+        event = self.message(content=[{"type": "text", "text": "请看图片"},
+                                      {"type": "image", "image_url": path.as_uri()}])
+        await channel.send_event(user_id="owner", session_id=SESSION, event=event)
+        await channel.send_event(user_id="owner", session_id=SESSION, event=event)
+        channel._client.post.assert_awaited_once()
+        content = channel._client.post.call_args.args[1]["content"]
+        self.assertEqual(content[0], {"type": "text", "text": "请看图片"})
+        self.assertEqual(content[1]["type"], "image")
+        self.assertEqual(content[1]["path"], SESSION + "/outbound/picture.png")
+        self.assertEqual(content[1]["sha256"], hashlib.sha256(path.read_bytes()).hexdigest())
+
+    async def test_nested_unicode_file_uri_preserves_real_bytes(self):
+        base = self.media_file().parent
+        nested = base / "reports"
+        nested.mkdir()
+        path = nested / "报告.pdf"
+        path.write_bytes(b"generated nested report")
+        descriptor = media_descriptor(str(self.media_root), SESSION, path.as_uri(), "file")
+        self.assertEqual(descriptor["path"], SESSION + "/outbound/reports/报告.pdf")
+        self.assertEqual(descriptor["filename"], "报告.pdf")
+        self.assertEqual(descriptor["sha256"], hashlib.sha256(path.read_bytes()).hexdigest())
+
+    async def test_native_audio_and_video_are_readable_descriptors(self):
+        path = self.media_file("media.bin", b"media bytes fixture")
+        channel = self.channel()
+        await channel.send_content_parts(SESSION, [
+            {"type": "audio", "data": str(path), "format": "wav"},
+            {"type": "video", "video_url": path.as_uri()},
+        ], {"session_id": SESSION, "user_id": "owner"})
+        content = channel._client.post.call_args.args[1]["content"]
+        self.assertEqual([part["type"] for part in content], ["audio", "video"])
+        self.assertTrue(all(part["size"] == path.stat().st_size for part in content))
+
+    async def test_media_rejects_other_session_inbound_urls_and_traversal(self):
+        path = self.media_file()
+        foreign = self.media_root / OTHER_SESSION / "outbound"
+        foreign.mkdir(parents=True)
+        (foreign / "other.txt").write_bytes(b"other private conversation")
+        incoming = self.media_root / SESSION / "inbound" / "upload.txt"
+        incoming.write_bytes(b"incoming source")
+        for source in [str(foreign / "other.txt"), str(incoming), str(self.media_root / "secret.txt"),
+                       "https://private.example/file?token=secret", "data:image/png;base64,c2VjcmV0",
+                       "outbound/../inbound/upload.txt", "../outbound/report.txt", "file://remote-server/share.txt",
+                       "file:///bridge-files/%2e%2e/private", "outbound\\report.txt"]:
+            with self.subTest(source=source):
+                with self.assertRaises(BridgeError):
+                    media_descriptor(str(self.media_root), SESSION, source, "file")
+        self.assertEqual(media_descriptor(str(self.media_root), SESSION, str(path), "file")["size"], path.stat().st_size)
+
+    async def test_media_rejects_links_directories_empty_and_oversize_files(self):
+        path = self.media_file()
+        hardlink = path.parent / "linked.txt"
+        try:
+            os.link(path, hardlink)
+        except OSError:
+            self.skipTest("Hardlink creation unavailable on this host")
+        with self.assertRaises(BridgeError):
+            media_descriptor(str(self.media_root), SESSION, str(hardlink), "file")
+        hardlink.unlink()
+        empty = self.media_file("empty.txt", b"")
+        for source in [str(empty), str(path.parent)]:
+            with self.assertRaises(BridgeError):
+                media_descriptor(str(self.media_root), SESSION, source, "file")
+        with self.assertRaises(BridgeError):
+            media_descriptor(str(self.media_root), SESSION, str(path), "file", max_file_bytes=2)
+
+    async def test_media_rejects_symlink_even_to_own_outbound(self):
+        path = self.media_file()
+        link = path.parent / "symlink.txt"
+        try:
+            link.symlink_to(path)
+        except OSError:
+            self.skipTest("Symlink creation unavailable on this host")
+        with self.assertRaises(BridgeError):
+            media_descriptor(str(self.media_root), SESSION, str(link), "file")
+
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "POSIX FIFO creation unavailable on this host")
+    async def test_fifo_is_rejected_without_blocking_the_worker(self):
+        path = self.media_file().parent / "pipe"
+        os.mkfifo(path)
+        # A bounded child process detects a blocking regression without leaving
+        # a stuck non-daemon executor thread in the test process.
+        code = (
+            "import sys; from qwenpaw_plugin_astrbot_bridge.media import media_descriptor; "
+            "from qwenpaw_plugin_astrbot_bridge.bridge_client import BridgeError; "
+            "\ntry: media_descriptor(*sys.argv[1:], 'file')"
+            "\nexcept BridgeError: sys.exit(0)"
+            "\nelse: sys.exit(1)"
+        )
+        result = subprocess.run([sys.executable, "-c", code, str(self.media_root), SESSION, str(path)],
+                                timeout=3, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr.decode(errors="replace"))
+
+    async def test_media_hash_rejects_changed_file(self):
+        path = self.media_file()
+        original_read = os.read
+        modified = False
+
+        def changed_read(fd, count):
+            nonlocal modified
+            data = original_read(fd, count)
+            if not modified:
+                modified = True
+                path.write_bytes(b"modified during export")
+            return data
+
+        with patch("qwenpaw_plugin_astrbot_bridge.media.os.read", side_effect=changed_read):
+            with self.assertRaises(BridgeError):
+                media_descriptor(str(self.media_root), SESSION, str(path), "file")
+
+    async def test_media_names_limits_and_bad_context_fail_before_network(self):
+        path = self.media_file()
+        for name in ["../bad.txt", "url:secret", "bad\nname"]:
+            with self.assertRaises(BridgeError):
+                media_descriptor(str(self.media_root), SESSION, str(path), "file", name)
+        with patch.object(self.tools.BridgeClient, "post", new_callable=AsyncMock) as post:
+            self.runtime.context.channel = "console"
+            with self.assertRaises(BridgeError):
+                await self.tools.astrbot_send_file(str(path))
+            post.assert_not_awaited()
+
+    async def test_more_than_four_native_attachments_gets_explicit_notice(self):
+        path = self.media_file()
+        channel = self.channel()
+        await channel.send_content_parts(SESSION, [{"type": "file", "file_url": str(path)}] * 5,
+                                         {"session_id": SESSION, "user_id": "owner"})
+        content = channel._client.post.call_args.args[1]["content"]
+        self.assertEqual(sum(part["type"] == "file" for part in content), 4)
+        self.assertIn("附件未发送", content[-1]["text"])
 
 
 class HttpClientTests(unittest.IsolatedAsyncioTestCase):
@@ -341,6 +537,17 @@ class HttpClientTests(unittest.IsolatedAsyncioTestCase):
                     BridgeSettings.from_config({})
         with self.assertRaises(BridgeError):
             await BridgeClient(BridgeSettings("http://astrbot:9186", "test")).post("/admin", {})
+
+    async def test_shared_root_env_priority_and_limits(self):
+        with patch.dict(os.environ, {"BRIDGE_TOKEN": "test", "BRIDGE_FILES_ROOT": "root", "BRIDGE_FILES_DIR": "legacy",
+                                     "BRIDGE_MAX_FILE_BYTES": "1024", "BRIDGE_MAX_FILES": "2"}, clear=True):
+            settings = BridgeSettings.from_config({"files_dir": "config"})
+            self.assertEqual((settings.files_dir, settings.max_file_bytes, settings.max_files), ("root", 1024, 2))
+        for variable, value in [("BRIDGE_MAX_FILE_BYTES", "20971521"), ("BRIDGE_MAX_FILES", "5"),
+                                ("BRIDGE_MAX_FILES", "0"), ("BRIDGE_MAX_FILE_BYTES", "invalid")]:
+            with patch.dict(os.environ, {"BRIDGE_TOKEN": "test", variable: value}, clear=True):
+                with self.assertRaises(BridgeError):
+                    BridgeSettings.from_config({})
 
 
 if __name__ == "__main__":

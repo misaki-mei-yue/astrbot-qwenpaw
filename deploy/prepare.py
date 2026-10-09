@@ -57,6 +57,13 @@ def env_value(value: str) -> str:
     return "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'"
 
 
+def validate_media_limits(env: dict[str, str]) -> None:
+    for key, ceiling in (("BRIDGE_MAX_FILE_BYTES", 20 * 1024 * 1024), ("BRIDGE_MAX_FILES", 4)):
+        value = env[key]
+        if not value.isascii() or not value.isdecimal() or not 1 <= int(value) <= ceiling:
+            raise ValueError(f"{key} must be a positive integer no greater than {ceiling}.")
+
+
 def private_write(path: Path, text: str, *, replace: bool = False) -> None:
     reject_symlinks(path)
     if path.exists() and not replace:
@@ -120,6 +127,11 @@ def _prepare_locked(mode: str, root: Path, existing_dir: Path | None = None) -> 
         "ASTRBOT_BRIDGE_URL": "http://astrbot:9186",
         "OWNER_USER_IDS": "",
         "TOOL_ALLOWLIST": "",
+        "BRIDGE_MAX_FILE_BYTES": "20971520",
+        "BRIDGE_MAX_FILES": "4",
+        "BRIDGE_MEDIA_TIMEOUT": "60",
+        "BRIDGE_SOURCE_ROOTS": "/AstrBot/data/temp",
+        "BRIDGE_NAPCAT_HOSTS": "napcat",
         "QWENPAW_AUTH_ENABLED": "false",
         "ASTRBOT_MEMORY": "640m",
         "ASTRBOT_SWAP": "1280m",
@@ -132,6 +144,7 @@ def _prepare_locked(mode: str, root: Path, existing_dir: Path | None = None) -> 
     }
     for key, value in defaults.items():
         env.setdefault(key, value)
+    validate_media_limits(env)
     env["INSTALL_ROOT"] = root.as_posix()
     env["PROJECT_SOURCE"] = PROJECT_SOURCE.as_posix()
     if existing_dir is not None:

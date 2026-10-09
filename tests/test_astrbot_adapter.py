@@ -25,6 +25,31 @@ class Plain:
         self.text = text
 
 
+class MediaComponent:
+    def __init__(self, file="", url="", path=None, **kwargs):
+        self.file = file
+        self.url = url
+        self.path = path
+
+    @classmethod
+    def fromFileSystem(cls, path):
+        return cls(file=path, path=path)
+
+
+class Image(MediaComponent): pass
+class Record(MediaComponent): pass
+class Video(MediaComponent): pass
+
+
+class File:
+    def __init__(self, name="file.bin", file="", url=""):
+        self.name = name
+        self.file_ = file
+        self.file = file
+        self.path = file
+        self.url = url
+
+
 class Chain:
     def __init__(self, chain=None):
         self.chain = chain or []
@@ -52,7 +77,7 @@ ASTRBOT_MODULES = {
         filter=types.SimpleNamespace(command=decorator, event_message_type=decorator,
                                      EventMessageType=types.SimpleNamespace(ALL="all")),
     ),
-    "astrbot.api.message_components": module("astrbot.api.message_components", Plain=Plain),
+    "astrbot.api.message_components": module("astrbot.api.message_components", Plain=Plain, Image=Image, Record=Record, Video=Video, File=File),
     "astrbot.api.star": module("astrbot.api.star", Context=object, Star=Star),
 }
 with patch.dict(sys.modules, ASTRBOT_MODULES):
@@ -129,7 +154,8 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.context = types.SimpleNamespace(send_message=AsyncMock(return_value=True))
-        self.bridge = adapter.QwenPawBridge(self.context, {"owner_user_ids": ["owner"]})
+        self.bridge = adapter.QwenPawBridge(self.context, {"owner_user_ids": ["owner"],
+            "files_root": str(Path(self.temp.name) / "shared"), "source_roots": [self.temp.name]})
         self.bridge.token = "a" * 32
         self.bridge._store = BridgeStore(Path(self.temp.name) / "state.sqlite3")
         self.bridge._client = types.SimpleNamespace(
@@ -210,11 +236,11 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([item async for item in self.bridge.forward_chat(event)], [])
         self.bridge._client.chat.assert_not_awaited()
 
-    async def test_attachment_is_explicitly_refused(self):
+    async def test_unavailable_attachment_is_explicitly_refused(self):
         event = Event()
-        event.segments = [type("Image", (), {})()]
+        event.segments = [Image(file=str(Path(self.temp.name) / "missing.png"))]
         result = [item async for item in self.bridge.forward_chat(event)]
-        self.assertIn("尚未转发", result[0].chain[0].text)
+        self.assertIn("本次未转发", result[0].chain[0].text)
         self.bridge._client.chat.assert_not_awaited()
         self.assertTrue(event.call_llm)
 
@@ -429,7 +455,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         await anext(stream)
         nonce = self.bridge._active[self.sid].turn_id
         self.assertRegex(nonce, "^[0-9a-f]{32}$")
-        self.bridge._client.chat.assert_awaited_once_with(self.sid, "owner", "hello", turn_id=nonce)
+        self.bridge._client.chat.assert_awaited_once_with(self.sid, "owner", "hello", content=[{"type": "text", "text": "hello"}], turn_id=nonce)
         await stream.aclose()
 
     async def test_completed_tool_receipt_is_bound_to_its_original_nonce(self):

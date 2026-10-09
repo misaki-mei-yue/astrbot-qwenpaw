@@ -4,13 +4,13 @@
 
 ## 当前支持范围
 
-- AstrBot 文字消息进入 QwenPaw，同一平台会话固定使用服务端随机生成的 `ab_<32位hex>` 会话 ID，保留历史。
-- QwenPaw 的最终文字回复通过 AstrBot 回到原会话。
-- QwenPaw 定时任务将最终文字结果发回已登记的 AstrBot 会话。
+- AstrBot 消息与受支持的附件进入 QwenPaw，同一平台会话固定使用服务端随机生成的 `ab_<32位hex>` 会话 ID，保留历史。
+- QwenPaw 的最终文字和已验证的共享文件通过 AstrBot 回到原会话。
+- QwenPaw 定时任务将最终结果发回已登记的 AstrBot 会话，也可显式调用 `astrbot_send_file` 发送生成文件。
 - `astrbot_list_tools()`、`astrbot_call_tool(tool_name, arguments)` 调用管理员允许的 AstrBot 插件工具。工具函数内部读取真实 QwenPaw 会话、用户、频道和 Agent 上下文，不让模型选择身份。
 - QwenPaw 的记忆、文件、浏览器等能力在其自身运行环境中执行；桥接不能让服务器直接操作用户电脑上的浏览器或文件。
 
-**0.1 版仅桥接文字。** 收发图片、附件、视频和微信音频还没有完整适配。QwenPaw 生成媒体时会明确提示到控制台查看，不把内部文件路径、媒体 URL 或音频数据发到微信 / QQ。工作区不需要挂载 AstrBot 的整个 `data` 目录。
+**0.2 版增加会话隔离的附件传输。** 出站仅发送当前会话共享工作区内真实存在的图片、文件、视频或音频。默认每文件20MiB、每消息4个附件；不支持远程 URL、data URL 或桥接根外路径导出。QQ 音频走 Record；微信接口不支持语音气泡时以文件发送并明确说明。图片理解、音频转写和视频理解仍取决于 QwenPaw 配置的模型与提供商。工作区不需要挂载 AstrBot 的整个 `data` 目录；具体平台行为仍需真实账号联调。
 
 ## 安装与配置
 
@@ -21,7 +21,7 @@
 /app/working/plugins/qwenpaw_plugin_astrbot_bridge/plugin.py
 ```
 
-插件 manifest 的 ID 为 `astrbot-bridge`，类型为 `channel`。2.2.1 官方 `PluginApi` 允许同一个 channel 插件注册工具；这里同时注册 `astrbot` 频道和两个本地工具，不需要远程 MCP。不要把本仓库的研究源码当运行插件安装。
+插件 manifest 的 ID 为 `astrbot-bridge`，类型为 `channel`。2.2.1 官方 `PluginApi` 允许同一个 channel 插件注册工具；这里同时注册 `astrbot` 频道、两个插件工具桥接函数和两个附件函数，不需要远程 MCP。不要把本仓库的研究源码当运行插件安装。
 
 QwenPaw 的工作目录通过 `QWENPAW_WORKING_DIR` 指定。官方 Docker 默认 `/app/working`；Agent 默认 ID 是 `default`，其配置在 `/app/working/workspaces/default/agent.json`。将以下内容合并到该 Agent 原有配置，不要覆盖已有模型、记忆或工具配置：
 
@@ -46,9 +46,14 @@ ASTRBOT_BRIDGE_URL=http://astrbot:9186
 BRIDGE_TOKEN=<私有桥接令牌>
 QWENPAW_AGENT_ID=default
 QWENPAW_ENABLED_CHANNELS=console,astrbot
+BRIDGE_FILES_ROOT=/bridge-files
+BRIDGE_MAX_FILE_BYTES=20971520
+BRIDGE_MAX_FILES=4
 ```
 
 环境变量优先于频道 `callback_url` / `callback_token`；工具也可读取 root `config.json` 中插件 `plugins["astrbot-bridge"].bridge.callback_url/callback_token` 作为后备。已有 AstrBot 服务的网络别名可能是 `astrbot-weixin`，使用部署说明生成的实际内部地址。不能填公网管理后台域名；后台 HTTPS 入口与内部桥接端口是两个服务。
+
+`BRIDGE_FILES_ROOT` 优先于旧版 `BRIDGE_FILES_DIR`，再回落到频道 `files_dir`。AstrBot 和 QwenPaw 的共享根与限额必须一致。限额可降低，不能超过20MiB或4个；0、负数和无效文本会让配置失败。给模型授予共享目录的最小文件读写权限需要单独配置 QwenPaw 文件治理，挂载目录不代表自动授权。
 
 两边配置的 `QWENPAW_AGENT_ID` 必须一致。桥接工具拒绝其他 Agent、Console 会话、未登记的会话以及缺失用户上下文。AstrBot 为每轮对话生成新的 32 位随机 `turn_id`，通过可信原生请求上下文传入 QwenPaw；插件的 PRE_DISPATCH hook 将它放入 ContextVar，工具自行附带它。模型工具参数不包含会话、身份或 turn ID。网关验证 nonce 与仍有效的原始 AstrBot event 一致，防止旧任务迟到的工具调用绑定下一轮 event；FINALLY hook 清理当前请求的 nonce。单有会话 ID 不构成授权。
 
@@ -76,7 +81,7 @@ Content-Type: application/json
 }
 ```
 
-返回 `text/event-stream`，每条事件为 `data: <JSON>\n\n`。最终回复是 `object=message,status=completed,type=message,role=assistant` 的 `content`；最终 `object=response,status=completed` 的 `output` 还会包含相同消息，不能重复发送。reasoning、工具调用和工具输出不转成聊天回复。
+返回 `text/event-stream`，每条事件为 `data: <JSON>\n\n`。最终回复是 `object=message,status=completed,type=message,role=assistant` 的 `content`；最终 `object=response,status=completed` 的 `output` 还会包含相同消息，不能重复发送。reasoning、工具调用和工具输出的文字不转成聊天回复。只有明确发送文件的 `send_file_to_user` 已完成工具输出允许提取媒体引用，之后仍需通过共享目录边界检查。
 
 同一个会话有任务运行时，新发消息返回 HTTP 409，需要在 AstrBot 侧排队。断开 SSE 不会终止任务；`reconnect:true` 可以重新连接已有任务。不要因网络超时自动重新执行同一任务。停止接口接受真实 ChatSpec UUID：`POST /api/agents/default/console/chat/stop?chat_id=<UUID>`；它的 session fallback 只查 Console 频道，不应依赖该 fallback 停止 AstrBot 会话。
 
@@ -113,21 +118,53 @@ Console 的 SSE 处理路径只输出 SSE 并打印回复，不会再向 `astrbo
 
 务必显式设置 **`runtime.tool_safety=true`**。官方 2.2.1 的默认值是 `false`，会把该 Cron 执行的审批级别改为 `OFF`。`true` 设为 `AUTO`，被拦截的操作等待用户批准；它不代表自动批准一切。`share_session=true` 将历史和主动回复保持在原会话。Cron 没有当前聊天的 turn nonce，也没有仍有效的原始 AstrBot event，因此不能借用 `astrbot_list_tools` / `astrbot_call_tool`；主动任务应使用 QwenPaw 自身工具，最终回复仍可回到原 AstrBot 会话。
 
+Cron 发送生成文件优先使用 `astrbot_media_workspace()` 和 `astrbot_send_file(path, kind)`。它们验证真实 Agent、频道、用户和根会话，不借用已过期 event。任务必须明确得到用户允许发送文件，使用 `share_session=true`、`tool_safety=true` 和 `silent=false`。官方 Cron 的 `silent=true` 只阻止最终 dispatch；2.2.1 没有把该标记传进工具上下文，因此它不会阻止显式发送工具的副作用。静默任务不能调用 `astrbot_send_file`。本插件不猜测静默状态，也不自动批准工具。
+
 ## 审批
 
 官方工具审批通过异步 pending request 等待结果，默认超时 300 秒。对于 HTTP Console 发起的任务，不能依赖自定义频道一定收到审批推送。AstrBot 插件查询 `GET /api/approval/list` 的 `pending_approvals`，按 `root_session_id` 和 `owner_agent_id` 过滤，向原会话显示需要审批的操作。
 
 用户明确批准或拒绝后，使用 `/api/approval/approve` 或 `/api/approval/deny`，body 为 `request_id/session_id/user_id`，批准可带 `scope="exact"`。这里 `session_id` 是审批所属的根会话。审批接口返回的 `user_id` 字段本身不是有效鉴权保证；AstrBot 本地仍必须核对操作人和已登记会话。不要对 pending request 自动批准。超时或拒绝会让 QwenPaw 的原任务继续按拒绝结果处理。
 
-## 媒体扩展契约（尚未实现）
+## 附件工作流与边界
 
-后续可以使用两容器共同挂载的 `/bridge-files`，通过严格相对路径引用文件。协议必须拒绝 `..`、绝对路径、URL、Windows 驱动器、符号链接逃逸，验证实际解析路径与文件大小后再发送。不允许以“兼容附件”为由给 QwenPaw 挂载整个 AstrBot 数据目录或读取其凭据。微信音频另有平台与编码限制，应单独适配、测试，不能以 QQ 支持音频推断微信也支持。
+调用 `astrbot_media_workspace()` 获取当前会话的 `inbound_dir`、`outbound_dir` 和限额，模型不能传入用户或会话参数。例如当前会话为 `ab_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa`：
+
+```text
+/bridge-files/ab_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/inbound/   收到的附件
+/bridge-files/ab_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/outbound/  允许发送的生成文件
+```
+
+将生成文件写到返回的 `outbound_dir`，完成写入后调用 `astrbot_send_file("outbound/report.pdf", "file")`。`kind` 可以是 `file`、`image`、`video` 或 `audio`。也可使用该目录内本地绝对路径；插件导出时转成受限相对路径，不向平台暴露服务器路径。已有工作区的文件不会被桥接自动复制；需先通过用户授权的 QwenPaw 文件操作放到本会话 outbound。子目录允许使用，每一层都必须通过无链接检查。
+
+QwenPaw 插件和 AstrBot 网关独立校验所属会话、真实文件、每一层路径、单链接数量、大小和 SHA-256。符号链接、Windows junction/reparse point、hardlink、FIFO、目录、根外文件、另一会话文件以及 outbound 之外的文件都不能导出。读取过程中被修改的文件会拒绝；网关再复制成随机发送快照，重新核对 hash 和 size。附件不可用或超出限制时会返回明确提示，不静默丢弃。
+
+私网 `POST /v1/deliver` 的媒体块为：
+
+```json
+{
+  "type": "file",
+  "path": "ab_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/outbound/report.pdf",
+  "filename": "report.pdf",
+  "size": 1234,
+  "sha256": "文件内容的64位小写hex SHA-256"
+}
+```
+
+外层仍含真实 `session_id`、`user_id`、`delivery_id`。每个工具调用只生成一次 delivery ID，同次 HTTP 重试保持完全相同请求；网关持久去重表示它已受理，不能冒充微信 / QQ 的送达确认。重新调用工具属于新发送，不能在超时后反复调用来猜测送达情况。
+
+官方输入 schema 使用 `image_url`、`video_url`、音频 `data` 和文件 `file_url/filename`；这些字段可以引用共享入站附件的本地绝对路径。桥接不使用官方 `/console/upload` 存储用户附件，因为它的媒体目录按 Agent 共用而不是按本项目会话隔离；也不把 `/files/preview` 当授权下载出口。
+
+普通 SSE 对话可用 QwenPaw 原生 `send_file_to_user`，前提是文件已在本会话 outbound。2.2.1 将该工具返回的 `DataBlock(URLSource)` 封装为已完成 `plugin_call_output` 的 `data.output` JSON 列表，本项目只提取明确发送工具的媒体字段，保留它直到最终回复并按引用去重；工具文字和内部 `view_image` / 浏览器截图仍不发送。Cron final 模式只派发最后一个完成消息，不能依赖它自动拾取更早的工具附件，因此主动任务优先用本插件的显式发送工具。
 
 ## 核实来源
 
 - [QwenPaw 官方稳定版本源码](https://github.com/agentscope-ai/QwenPaw/tree/cae5773707b26ab2fd00903f84b712387894b256)
 - [Console 对话 API](https://github.com/agentscope-ai/QwenPaw/blob/cae5773707b26ab2fd00903f84b712387894b256/src/qwenpaw/app/routers/console.py)
 - [流式事件 schema](https://github.com/agentscope-ai/QwenPaw/blob/cae5773707b26ab2fd00903f84b712387894b256/src/qwenpaw/schemas.py)
+- [媒体输入转换](https://github.com/agentscope-ai/QwenPaw/blob/cae5773707b26ab2fd00903f84b712387894b256/src/qwenpaw/runtime/message_convert.py)
+- [官方文件发送工具](https://github.com/agentscope-ai/QwenPaw/blob/cae5773707b26ab2fd00903f84b712387894b256/src/qwenpaw/agents/tools/send_file.py)
+- [真实工具媒体输出封装](https://github.com/agentscope-ai/QwenPaw/blob/cae5773707b26ab2fd00903f84b712387894b256/src/qwenpaw/runtime/envelope.py)
 - [插件 channel/tool 注册 API](https://github.com/agentscope-ai/QwenPaw/blob/cae5773707b26ab2fd00903f84b712387894b256/src/qwenpaw/plugins/api.py)
 - [频道真实工厂与发送签名](https://github.com/agentscope-ai/QwenPaw/blob/cae5773707b26ab2fd00903f84b712387894b256/src/qwenpaw/app/channels/base.py)
 - [真实运行上下文注入](https://github.com/agentscope-ai/QwenPaw/blob/cae5773707b26ab2fd00903f84b712387894b256/src/qwenpaw/hooks/request_setup/contextvars_hook.py)

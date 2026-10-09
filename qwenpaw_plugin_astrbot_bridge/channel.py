@@ -10,36 +10,11 @@ from uuid import NAMESPACE_URL, uuid4, uuid5
 from qwenpaw.app.channels.base import BaseChannel
 
 from .bridge_client import BridgeClient, BridgeError, BridgeSettings, config_value
+from .media import outgoing_content
 
 
 def _value(value: Any) -> Any:
     return getattr(value, "value", value)
-
-
-def text_content(parts: list[Any]) -> list[dict[str, str]]:
-    """Text-only v0.1 contract. Never expose internal media URLs or paths."""
-    result: list[dict[str, str]] = []
-    has_media = False
-    has_audio = False
-    for part in parts:
-        kind = _value(config_value(part, "type"))
-        if kind == "text":
-            text = config_value(part, "text", "")
-            if isinstance(text, str) and text.strip():
-                result.append({"type": "text", "text": text})
-        elif kind == "refusal":
-            text = config_value(part, "refusal", "")
-            if isinstance(text, str) and text.strip():
-                result.append({"type": "text", "text": text})
-        elif kind in {"image", "file", "video"}:
-            has_media = True
-        elif kind == "audio":
-            has_audio = True
-    if has_media:
-        result.append({"type": "text", "text": "本次任务生成了图片或文件；当前桥接仅发送文字，请到 QwenPaw 控制台查看或下载附件。"})
-    if has_audio:
-        result.append({"type": "text", "text": "本次任务生成了音频；当前微信 / QQ 桥接暂不发送音频，请到 QwenPaw 控制台查看。"})
-    return result
 
 
 def is_completed_assistant_message(event: Any) -> bool:
@@ -115,6 +90,8 @@ class AstrBotChannel(BaseChannel):
                 self._accepted[delivery_id] = None
                 while len(self._accepted) > 2048:
                     self._accepted.popitem(last=False)
+            else:
+                raise BridgeError("The gateway did not accept this delivery or its result is uncertain; do not repeat the operation automatically.")
 
     async def send(self, to_handle, text, meta=None):
         await self.send_content_parts(to_handle, [{"type": "text", "text": text}], meta)
@@ -125,7 +102,7 @@ class AstrBotChannel(BaseChannel):
         user_id = meta.get("user_id")
         # Fixed-text cron jobs execute separately even when their text is identical.
         delivery_id = str(meta.get("delivery_id") or uuid4())
-        await self._deliver(session_id, user_id, text_content(parts), delivery_id)
+        await self._deliver(session_id, user_id, await outgoing_content(parts, self._settings, session_id), delivery_id)
 
     async def send_event(self, *, user_id, session_id, event, meta=None):
         # Configure cron dispatch.mode='final'. Completed assistant message only;
@@ -137,4 +114,4 @@ class AstrBotChannel(BaseChannel):
             uuid5(NAMESPACE_URL, f"astrbot-bridge:{session_id}:{user_id}:{event_id}")
             if event_id else uuid4()
         )
-        await self._deliver(session_id, user_id, text_content(config_value(event, "content", [])), delivery_id)
+        await self._deliver(session_id, user_id, await outgoing_content(config_value(event, "content", []), self._settings, session_id), delivery_id)

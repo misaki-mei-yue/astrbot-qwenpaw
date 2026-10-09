@@ -94,13 +94,33 @@ docker compose --env-file /opt/bot-combined/.env -f deploy/compose.yaml up -d
 ## 两端初次配置
 
 1. 在 AstrBot 确认桥接插件加载。通过自己的微信/QQ 私聊发送 `/paw whoami`，取得自己的平台用户 ID；将它填入新私密 `.env` 的 `OWNER_USER_IDS`，多个 ID 逗号分隔。保持文件 0600，不把用户标识写进公共仓库。按所选部署模式的 AstrBot 命令重新应用环境变量。
-2. `TOOL_ALLOWLIST` 初始为空，禁止由 QwenPaw 调用 AstrBot 插件工具。先选择需要的具体工具名称；`*` 是显式开放全部工具，不是默认值。普通插件指令仍由 AstrBot 自己处理。QwenPaw 使用自己的工作区；`/bridge-files` 是单独共享的导出目录，不挂载其他项目或整个宿主数据。
+2. `TOOL_ALLOWLIST` 初始为空，禁止由 QwenPaw 调用 AstrBot 插件工具。先选择需要的具体工具名称；`*` 是显式开放全部工具，不是默认值。普通插件指令仍由 AstrBot 自己处理。QwenPaw 使用自己的工作区；`/bridge-files` 是专用附件共享，不挂载其他项目或整个宿主数据。
 3. QwenPaw 初次启动会通过官方入口初始化自己的空数据目录。默认 agent ID 是 `default`，不是 `main`。在控制台配置有效的模型提供商和模型；不要把 AstrBot 密钥自动抄到另一服务。
 4. QwenPaw 会自动发现 `astrbot-bridge` 插件，无需给插件编造 `enabled` 开关。在 `default` agent 的 Channels 中启用 `astrbot`。插件已只读挂载到 `/app/working/plugins/qwenpaw_plugin_astrbot_bridge`；回调地址 `http://astrbot:9186` 和回调密钥由环境变量提供。需要手动编辑时，仅合并 `/app/working/workspaces/default/agent.json` 中 `channels.astrbot = {"enabled": true}`，保留所有其他字段；不要整份替换未知 `agent.json`。Native tool 使用环境变量 `ASTRBOT_BRIDGE_URL` 和 `BRIDGE_TOKEN`。
-5. 在 AstrBot 中发送普通文字先验证自己的请求，再验证浏览器任务和插件工具。当前桥接发送文字；图片、音频、文件等产物需到 QwenPaw 控制台下载。`/bridge-files` 已预留，但不能把它当成已完成的附件传输。微信和 QQ 会话各自隔离；不同账号的 ID 不应随意合并。
+5. 在 AstrBot 中发送普通文字先验证自己的请求，再验证浏览器任务和插件工具。附件按下方步骤测试；桥接支持受限的会话附件，尚需实际 QQ/微信联调确认平台上传结果。微信和 QQ 会话各自隔离；不同账号的 ID 不应随意合并。
 6. 主动任务通过 QwenPaw 原生 Cron/Heartbeat 配置，对应渠道选 `astrbot` 和已经登记的会话。每个 Cron 的 `runtime.tool_safety` 保持 `true`；它是任务的字段，不是可以随意塞进 `agent.json` 的开关。遇到敏感工具审批应等待所有者批准，不配置自动放行。
 
 QwenPaw 的 `QWENPAW_RUNTIME_INTERNAL_TOKEN` 保护全部 HTTP/WebSocket 路径。控制台代理只在 loopback 注入这个头，避免把密钥写进浏览器 URL。它不是给公网使用的无认证入口。若开启 QwenPaw 额外用户登录（`QWENPAW_AUTH_ENABLED=true`），桥接调用还需要该用户的 API 凭据；请按桥接插件支持情况配置，不要以关闭 runtime token 解决 401。
+
+## 会话附件和文件权限
+
+三个组件使用同一个容器路径 `/bridge-files`，宿主目录是 `${INSTALL_ROOT}/state/bridge-files`。AstrBot 和 QwenPaw 可读写，NapCat 只读。每个由服务器登记的 `ab_sid` 有三个独立目录：
+
+| 目录 | 用途 |
+|---|---|
+| `/bridge-files/{ab_sid}/inbound` | AstrBot 检查、复制进来的本会话附件 |
+| `/bridge-files/{ab_sid}/outbound` | QwenPaw 为本会话生成、准备发送的文件 |
+| `/bridge-files/{ab_sid}/delivery` | AstrBot 发送时保存的受检文件副本 |
+
+不要自行把 QQ/微信用户 ID 当成 `ab_sid`，也不要由模型填写目标会话。`astrbot_media_workspace` 工具从可信运行上下文返回当前会话的 `inbound_dir`、`outbound_dir` 和限制；让 QwenPaw 将生成文件写入它返回的 `outbound_dir`，再调用 `astrbot_send_file(path, kind)`。该工具没有用户或会话身份参数，Cron 也必须使用原来登记的真实会话。不能从 QwenPaw 的普通工作区直接发送：先由获准的文件操作生成本会话 outbound 文件。
+
+默认每个文件最多 **20 MiB**、每次最多 **4 个附件**。`.env` 中 `BRIDGE_MAX_FILE_BYTES=20971520` 和 `BRIDGE_MAX_FILES=4` 可以降低，上限由两端执行；`BRIDGE_MEDIA_TIMEOUT=60` 控制 AstrBot 媒体操作等待。只接受本会话 outbound 中的普通文件，拒绝目录外路径、跨会话、URL、符号链接和硬链接。即使上游 `send_file_to_user` 输出一个 `file://` 引用，也不能绕过桥接自己的路径检查。
+
+挂载目录只解决容器看见文件，**不会自动给 QwenPaw 文件工具授权**。保持工具审批和沙箱设置；首次让文件工具写 outbound 时，在 QwenPaw 的审批流程中确认实际工具和完整路径。需要持久授权时，由管理员在该工作区的 governance `policy.yaml` 里保留原有规则，并仅合并本会话路径的 `Read`、`Write`（按需再加 `Edit`、`Append`）规则，例如 `Write(/bridge-files/实际ab_sid/outbound/**)`、`Read(/bridge-files/实际ab_sid/outbound/**)`，`action: allow`。若要读取 inbound，只增加该会话 inbound 的 `Read` 规则。源码会将这些文件规则编译成沙箱只读/可写挂载。不要给 `/bridge-files/**`、`/app/working/**` 或整个宿主目录添加一条全局允许，也不要关掉 guard 来解决路径拒绝。将目录绑定成额外项目根会自动增加广泛的允许规则，不能把整个共享根作为绑定目标。[固定源码的权限实现](https://github.com/agentscope-ai/QwenPaw/blob/cae5773707b26ab2fd00903f84b712387894b256/src/qwenpaw/governance/resource_governor.py)。
+
+AstrBot 入站本地文件来源默认只允许 `/AstrBot/data/temp`（`BRIDGE_SOURCE_ROOTS`）；如果适配器缓存位于别处，先确认真实缓存路径，再只添加该缓存目录。`BRIDGE_NAPCAT_HOSTS=napcat` 限定私网 HTTP 下载的 NapCat 服务名；不用把任意私网主机加入。QQ/微信协议登录缓存、数据库和模型密钥仍不应成为附件来源。默认镜像内三个应用以 root 运行，准备脚本创建的私密目录无需改成 0777；自行改 UID/GID 时，只调整专用 state 子目录的所有权。
+
+验收时，用自己的 QQ/微信会话分别发送一张小图片和一个小文件，再让 QwenPaw 生成一个 outbound 文本文件并发送回来。QQ 可使用图片、音频、视频和文件组件；AstrBot 4.25.1 的微信适配器原生发送图片、视频和文件，音频作为文件发送。检查重复回调只投递一次、超过限额被拒绝、跨会话路径和链接文件被拒绝；这部分真实平台验收尚不能由静态测试代替。已有普通 AstrBot 插件的任意本地文件路径兼容性需另行检查。
 
 ## 查看状态和保留数据
 
@@ -116,4 +136,20 @@ NapCat 日志可能含登录 token/二维码；在自己终端查看，发送截
 
 已有安装回退：停止新增 add-on 服务，再用原项目的 Compose 和原 `.env` 显式重建原 AstrBot。这会移除新增挂载/网络，保留原数据。不得改用这个仓库的 fresh Compose 管理原 AstrBot。
 
-运行验证前应确认：微信/QQ 各收到一次回应、普通插件指令可用、QwenPaw 任务能回到原会话、非所有者无法操作、空工具白名单被拒绝、文件路径越界被拒绝、需要审批的动作不会自行通过。仓库静态测试不代替这些真实平台测试。
+运行验证前应确认：微信/QQ 各收到一次回应和一个小附件、普通插件指令可用、QwenPaw 任务能回到原会话、非所有者无法操作、空工具白名单被拒绝、文件路径越界被拒绝、需要审批的动作不会自行通过。仓库静态测试不代替这些真实平台测试。
+
+## 可选：真实上游消息结构检查
+
+`scripts/check_upstream_media.py` 可在独立 Python 3.11–3.13 环境中复现附件消息结构检查，不启动 AstrBot/QwenPaw、浏览器或 QQ/微信。需要 Pydantic 2、python-dotenv、aiohttp，以及固定 QwenPaw 提交的干净源码和 AgentScope `2.0.7.post1` 的官方 wheel。它不会把完整 QwenPaw 的模型/浏览器依赖装进常规 CI。
+
+在单独测试环境准备这些小依赖和 wheel 后运行，例如：
+
+```bash
+python -m pip install 'pydantic>=2,<3' 'python-dotenv>=1,<2' 'aiohttp>=3.9,<4'
+python -m pip download --no-deps --only-binary=:all: agentscope==2.0.7.post1 --dest /tmp/upstream-media
+python scripts/check_upstream_media.py --qwenpaw-source /tmp/qwenpaw-fixed-source --agentscope-path /tmp/upstream-media/agentscope-2.0.7.post1-py3-none-any.whl --report /tmp/upstream-media/report.json
+```
+
+`/tmp/qwenpaw-fixed-source` 需事先检出本页所列 Git 提交；拒绝其中含 `.env` 的目录。脚本检查 wheel SHA256 和关键源码 hash，验证四类媒体的真实 `ToolChunk` JSON 往返、Qwen renderer 的列表/JSON 字符串输出、原生 Content 往返，以及真实工具事件经 Qwen `Envelope` 到本项目 `AssistantCollector` 的最终文字和附件去重。输出报告列出确切次数和范围。
+
+为避免安装整个框架，检查器仅替换包初始化入口为 namespace：AgentScope 的 `tool`、`model` 和 QwenPaw 的父包不执行原 `__init__.py`；`model.FinishedReason` 转发未改动源码中的真实枚举。实际事件类、`ToolChunk`、schema、renderer、`Envelope` 和 collector 都执行真实源码，没有替代数据类。它验证消息协议，不能证明完整应用启动、模型能力、文件沙箱行为或 QQ/微信真实上传成功。

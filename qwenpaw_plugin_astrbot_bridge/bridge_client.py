@@ -30,13 +30,15 @@ class BridgeSettings:
     files_dir: str = "/bridge-files"
     timeout: float = 30.0
     attempts: int = 3
+    max_file_bytes: int = 20 * 1024 * 1024
+    max_files: int = 4
 
     @classmethod
     def from_config(cls, *configs: Any) -> "BridgeSettings":
         values: dict[str, Any] = {}
         for config in reversed(configs):
             nested = config_value(config, "bridge", {})
-            for name in ("callback_url", "callback_token", "files_dir"):
+            for name in ("callback_url", "callback_token", "files_dir", "max_file_bytes", "max_files"):
                 value = config_value(config, name)
                 if value is None:
                     value = config_value(nested, name)
@@ -58,10 +60,18 @@ class BridgeSettings:
             raise BridgeError("AstrBot bridge URL must be an HTTP(S) base URL.")
         if not isinstance(token, str) or not token.strip() or "\n" in token or "\r" in token:
             raise BridgeError("Configure a nonempty BRIDGE_TOKEN before using the bridge.")
+        limits = {}
+        for field, variable, ceiling in (("max_file_bytes", "BRIDGE_MAX_FILE_BYTES", 20 * 1024 * 1024),
+                                         ("max_files", "BRIDGE_MAX_FILES", 4)):
+            value = os.environ.get(variable, values.get(field, ceiling))
+            if isinstance(value, bool) or not str(value).isdigit() or not 0 < int(value) <= ceiling:
+                raise BridgeError("Configure positive media limits within 20MiB and 4 attachments.")
+            limits[field] = int(value)
         return cls(
             base_url=url,
             token=token,
-            files_dir=os.environ.get("BRIDGE_FILES_DIR", values.get("files_dir", "/bridge-files")),
+            files_dir=os.environ.get("BRIDGE_FILES_ROOT", os.environ.get("BRIDGE_FILES_DIR", values.get("files_dir", "/bridge-files"))),
+            **limits,
         )
 
 

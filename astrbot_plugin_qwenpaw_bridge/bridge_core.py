@@ -145,7 +145,60 @@ class AssistantCollector:
     """Emit final assistant messages once; never leak reasoning or tool events."""
     def __init__(self):
         self.messages: dict[str, list[dict]] = {}
+        self.tool_media: dict[str, dict] = {}
         self.completed = False
+
+    def _sent_files(self, message: dict):
+        """QwenPaw 2.2.1 send_file_to_user emits a tool DataContent envelope.
+
+        Only that explicit send tool may add attachments; other tool output,
+        including screenshots used internally, stays private. Paths are still
+        untrusted here and MUST pass the adapter's per-session file boundary.
+        """
+        if (message.get("role") != "tool" or message.get("status") != "completed"
+                or message.get("type") not in ("plugin_call_output", "function_call_output")):
+            return
+        for part in message.get("content") or []:
+            if not isinstance(part, dict) or part.get("type") != "data":
+                continue
+            data = part.get("data")
+            if not isinstance(data, dict) or data.get("name") != "send_file_to_user":
+                continue
+            output = data.get("output")
+            if not isinstance(output, str) or len(output) > 1024 * 1024:
+                continue
+            try:
+                blocks = json.loads(output)
+            except (ValueError, TypeError):
+                continue
+            if not isinstance(blocks, list):
+                continue
+            for block in blocks:
+                if not isinstance(block, dict):
+                    continue
+                kind = block.get("type")
+                if not isinstance(kind, str):
+                    continue
+                source = block.get("source")
+                if not isinstance(source, dict) or source.get("type") != "url":
+                    continue
+                # The fixed upstream envelope retains ordinary documents as
+                # DataBlock(type='data'); its channel renderer calls them file.
+                if kind == "data":
+                    mime = source.get("media_type")
+                    major = mime.split("/", 1)[0] if isinstance(mime, str) else ""
+                    kind = major if major in ("image", "video", "audio") else "file"
+                key = {"image": "image_url", "video": "video_url", "audio": "data", "file": "file_url"}.get(kind)
+                if not key:
+                    continue
+                url = source.get("url")
+                if not isinstance(url, str) or not url or len(url) > 4096:
+                    continue
+                content = {"type": kind, key: url}
+                identity = json.dumps(content, sort_keys=True)
+                self.tool_media[identity] = content
+                if len(self.tool_media) > 4:
+                    raise BridgeError("QwenPaw answer has more than four attachments")
 
     def _message(self, message: dict):
         if message.get("role") != "assistant" or message.get("type", "message") != "message":
@@ -175,6 +228,7 @@ class AssistantCollector:
         if status in ("failed", "cancelled", "canceled", "incomplete") and kind == "response":
             raise BridgeError("QwenPaw task did not complete; inspect its console")
         if kind == "message" and status == "completed":
+            self._sent_files(event)
             self._message(event)
         elif kind == "response" and status == "completed":
             # The response snapshot is authoritative: do not concatenate its
@@ -185,6 +239,7 @@ class AssistantCollector:
                 self.messages = {}
                 for message in output:
                     if isinstance(message, dict):
+                        self._sent_files(message)
                         self._message(message)
                 if not self.messages:
                     self.messages = previous
@@ -193,7 +248,18 @@ class AssistantCollector:
     def result(self) -> list[dict]:
         if not self.completed:
             raise BridgeError("QwenPaw task is still running or its final response was lost; no task was resubmitted")
-        return [block for blocks in self.messages.values() for block in blocks]
+        result = [block for blocks in self.messages.values() for block in blocks]
+        seen_media = set()
+        for block in result:
+            url = block.get("image_url") or block.get("video_url") or block.get("file_url") or block.get("data")
+            if isinstance(url, str):
+                seen_media.add((block.get("type"), url))
+        for block in self.tool_media.values():
+            key = (block["type"], next(value for name, value in block.items() if name != "type"))
+            if key not in seen_media:
+                result.append(block)
+                seen_media.add(key)
+        return result
 
 
 class QwenPawClient:

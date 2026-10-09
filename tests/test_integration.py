@@ -6,6 +6,7 @@ server, platform login or official runtime is started.
 """
 
 import asyncio
+import base64
 import importlib
 import json
 import os
@@ -32,6 +33,14 @@ from qwenpaw_plugin_astrbot_bridge.turn_context import clear_turn_id
 class HttpIntegrationTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.temp = tempfile.TemporaryDirectory()
+        self.files_root = Path(self.temp.name) / "shared"
+        self.source_root = Path(self.temp.name) / "incoming"
+        self.files_root.mkdir()
+        self.source_root.mkdir()
+        self.files_root = self.files_root.resolve()
+        self.source_root = self.source_root.resolve()
+        self.media_chat = False
+        self.media_kind = "image"
         self.runtime = RuntimeStub()
         self.context = SimpleNamespace(
             send_message=AsyncMock(return_value=True),
@@ -77,6 +86,7 @@ class HttpIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.env_patch.start()
         self.bridge = astrbot_fixture.adapter.QwenPawBridge(self.context, {
             "owner_user_ids": ["owner"], "tool_allowlist": ["lookup"],
+            "files_root": str(self.files_root), "source_roots": [str(self.source_root)],
         })
         self.bridge.token = self.bridge_token
         self.bridge._store = BridgeStore(Path(self.temp.name) / "bridge.sqlite3")
@@ -95,6 +105,7 @@ class HttpIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.gateway_runner, self.gateway_url = await self._listen(gateway)
         self.runtime.profile.channels.astrbot.callback_url = self.gateway_url
         self.runtime.profile.channels.astrbot.callback_token = self.bridge_token
+        self.runtime.profile.channels.astrbot.files_dir = str(self.files_root)
         self.tools = importlib.import_module("qwenpaw_plugin_astrbot_bridge.tools")
         self.tools.configure_tools({})
         self.channel_module = importlib.import_module("qwenpaw_plugin_astrbot_bridge.channel")
@@ -155,6 +166,8 @@ class HttpIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.qwen_requests.append(body)
         try:
             await self._bind_runtime(body)
+            if self.media_chat:
+                return await self._fake_media_chat(request, body)
             listing = await self.tools.astrbot_list_tools()
             if [tool["name"] for tool in listing["tools"]] != ["lookup"]:
                 raise AssertionError("Live event tool listing did not reach AstrBot")
@@ -186,6 +199,114 @@ class HttpIntegrationTests(unittest.IsolatedAsyncioTestCase):
             return web.json_response({"error": "fake_runtime_contract_failed"}, status=500)
         finally:
             await self.runtime_hooks.BridgeTurnCleanupHook().run(SimpleNamespace())
+
+    async def _fake_media_chat(self, request, body):
+        # Read the actual incoming file, generate an output in the trusted
+        # runtime's own workspace, then use the official send_file envelope.
+        media_block = next(part for part in body["input"][0]["content"] if part["type"] == self.media_kind)
+        source = Path(media_block["image_url" if self.media_kind == "image" else "file_url"])
+        self.assertTrue(source.is_relative_to(self.files_root / self.sid / "inbound"))
+        workspace = await self.tools.astrbot_media_workspace()
+        target = Path(workspace["outbound_dir"]) / ("result.png" if self.media_kind == "image" else "result.txt")
+        target.write_bytes(source.read_bytes())
+        sent = {
+            "object": "message", "status": "completed", "type": "plugin_call_output", "role": "tool",
+            "content": [{"type": "data", "data": {"name": "send_file_to_user", "output": json.dumps([
+                {"type": "image" if self.media_kind == "image" else "data", "source": {
+                    "type": "url", "url": target.as_uri(),
+                    "media_type": "image/png" if self.media_kind == "image" else "text/plain",
+                }},
+                {"type": "text", "text": "internal diagnostic must stay private"},
+            ])}}],
+        }
+        final = {"object": "message", "status": "completed", "type": "message", "role": "assistant",
+                 "content": [{"type": "text", "text": "已生成附件"}]}
+        response = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
+        await response.prepare(request)
+        # Tool media is absent from the final snapshot, as in QwenPaw 2.2.1.
+        for event in [sent, final, {"object": "response", "status": "completed", "output": [final]}]:
+            await response.write(("data: " + json.dumps(event) + "\n\n").encode())
+        await response.write_eof()
+        return response
+
+    async def test_image_bytes_cross_chat_http_and_native_tool_sse_without_getting_lost(self):
+        self.media_chat = True
+        content = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aB3cAAAAASUVORK5CYII=")
+        source = self.source_root / "input.png"
+        source.write_bytes(content)
+        event = astrbot_fixture.Event(text="处理这个图片", message_id="image-round-trip")
+        event.segments = [astrbot_fixture.Image(file=str(source))]
+        replies = [reply async for reply in self.bridge.forward_chat(event)]
+        self.assertEqual(self.fake_errors, [])
+        self.assertEqual(len(self.qwen_requests), 1)
+        self.assertEqual(len(replies), 1)
+        image_parts = [part for part in replies[0].chain if isinstance(part, astrbot_fixture.Image)]
+        self.assertEqual(len(image_parts), 1)
+        snapshot = Path(image_parts[0].file)
+        self.assertTrue(snapshot.is_relative_to(self.files_root / self.sid / "delivery"))
+        self.assertEqual(snapshot.read_bytes(), content)
+        text = "".join(part.text for part in replies[0].chain if isinstance(part, astrbot_fixture.Plain))
+        self.assertEqual(text, "已生成附件")
+        self.context.send_message.assert_not_awaited()
+
+    async def test_file_only_input_and_generic_data_tool_output_preserve_bytes(self):
+        self.media_chat = True
+        self.media_kind = "file"
+        content = "没有附带文字的普通文件".encode("utf-8")
+        source = self.source_root / "input.txt"
+        source.write_bytes(content)
+        event = astrbot_fixture.Event(text="", message_id="file-only-round-trip")
+        event.segments = [astrbot_fixture.File(name="input.txt", file=str(source))]
+        replies = [reply async for reply in self.bridge.forward_chat(event)]
+        self.assertEqual(self.fake_errors, [])
+        self.assertEqual(len(self.qwen_requests), 1)
+        self.assertEqual(len(replies), 1)
+        file_parts = [part for part in replies[0].chain if isinstance(part, astrbot_fixture.File)]
+        self.assertEqual(len(file_parts), 1)
+        snapshot = Path(file_parts[0].file)
+        self.assertTrue(snapshot.is_relative_to(self.files_root / self.sid / "delivery"))
+        self.assertEqual(snapshot.read_bytes(), content)
+        self.context.send_message.assert_not_awaited()
+
+    async def test_proactive_media_tool_replays_once_even_after_original_file_is_removed(self):
+        await self._bind_runtime({"session_id": self.sid, "user_id": "owner", "channel": "astrbot", "request_context": {}})
+        workspace = await self.tools.astrbot_media_workspace()
+        target = Path(workspace["outbound_dir"]) / "report.txt"
+        content = "主动生成的文件".encode("utf-8")
+        target.write_bytes(content)
+        accepted = await self.tools.astrbot_send_file(str(target), "file")
+        self.assertTrue(accepted["accepted"])
+        self.assertEqual(self.executions, [])
+        request_path, payload = self.gateway_requests[-1]
+        self.assertEqual(request_path, "/v1/deliver")
+        self.assertNotIn("turn_id", payload)
+        target.unlink()
+        repeated = await self.callback.post(request_path, payload)
+        self.assertEqual(repeated, accepted)
+        self.context.send_message.assert_awaited_once()
+        origin, chain = self.context.send_message.await_args.args
+        self.assertEqual(origin, self.route["origin"])
+        files = [part for part in chain.chain if isinstance(part, astrbot_fixture.File)]
+        self.assertEqual(len(files), 1)
+        snapshot = Path(files[0].file)
+        self.assertEqual(snapshot.read_bytes(), content)
+        self.assertTrue(snapshot.is_relative_to(self.files_root / self.sid / "delivery"))
+
+    async def test_media_callback_rejects_tampering_and_cross_session_before_platform_send(self):
+        from qwenpaw_plugin_astrbot_bridge.media import media_descriptor, media_workspace
+        workspace = media_workspace(str(self.files_root), self.sid)
+        target = Path(workspace["outbound_dir"]) / "safe.txt"
+        target.write_text("original", encoding="utf-8")
+        descriptor = media_descriptor(str(self.files_root), self.sid, str(target), "file")
+        payload = {"session_id": self.sid, "user_id": "owner", "delivery_id": "tampered", "content": [descriptor]}
+        target.write_text("modified", encoding="utf-8")
+        with self.assertRaisesRegex(BridgeError, "HTTP 400"):
+            await self.callback.post("/v1/deliver", payload)
+        target.write_text("original", encoding="utf-8")
+        foreign = self.bridge._store.get_or_create_session("qq:Group:other", "owner", "aiocqhttp")
+        with self.assertRaisesRegex(BridgeError, "HTTP 400"):
+            await self.callback.post("/v1/deliver", {**payload, "session_id": foreign["session_id"], "delivery_id": "foreign"})
+        self.context.send_message.assert_not_awaited()
 
     async def _fake_pending(self, request):
         if request.headers.get("X-QwenPaw-Runtime-Token") != self.runtime_token:

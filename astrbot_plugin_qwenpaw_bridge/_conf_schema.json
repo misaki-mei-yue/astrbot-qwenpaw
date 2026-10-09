@@ -9,5 +9,11 @@
   "runtime_token": {"description": "QwenPaw内部运行时密钥", "type": "string", "default": "", "hint": "推荐使用QWENPAW_RUNTIME_INTERNAL_TOKEN环境变量。"},
   "state_path": {"description": "独立桥接状态数据库", "type": "string", "default": "/AstrBot/data/plugin_data/qwenpaw_bridge/bridge.sqlite3"},
   "chat_timeout": {"description": "单次会话等待秒数", "type": "int", "default": 900},
-  "tool_timeout": {"description": "工具总执行秒数", "type": "int", "default": 120}
+  "tool_timeout": {"description": "工具总执行秒数", "type": "int", "default": 120},
+  "files_root": {"description": "共享媒体根目录", "type": "string", "default": "/bridge-files", "hint": "AstrBot、QwenPaw和NapCat必须挂载同一绝对路径。BRIDGE_FILES_ROOT环境变量优先。"},
+  "source_roots": {"description": "允许读取的入站本地附件目录", "type": "list", "default": [], "hint": "空列表默认使用AstrBot的temp目录，不允许读取整个data目录。BRIDGE_SOURCE_ROOTS逗号分隔环境变量优先。"},
+  "max_file_bytes": {"description": "每附件最大字节数", "type": "int", "default": 20971520, "hint": "硬上限20MiB。BRIDGE_MAX_FILE_BYTES环境变量优先。"},
+  "max_files": {"description": "每条消息最多附件数", "type": "int", "default": 4, "hint": "硬上限4。BRIDGE_MAX_FILES环境变量优先。"},
+  "napcat_hosts": {"description": "允许内网HTTP下载的NapCat主机名", "type": "list", "default": ["napcat"], "hint": "仅固定主机允许私网；其它来源会验证公网HTTPS。BRIDGE_NAPCAT_HOSTS环境变量优先。"},
+  "media_timeout": {"description": "单附件下载超时秒数", "type": "int", "default": 60, "hint": "BRIDGE_MEDIA_TIMEOUT环境变量优先。"}
 }
