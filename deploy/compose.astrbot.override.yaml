@@ -1,0 +1,23 @@
+# Apply only with the ORIGINAL existing AstrBot compose file and project name.
+# This file has no image/data replacement, stop/start command, or Caddy change.
+services:
+  astrbot:
+    environment:
+      BRIDGE_TOKEN: ${BRIDGE_TOKEN:?Run deploy/upgrade_existing.sh first}
+      QWENPAW_RUNTIME_INTERNAL_TOKEN: ${QWENPAW_RUNTIME_INTERNAL_TOKEN:?Run deploy/upgrade_existing.sh first}
+      QWENPAW_BASE_URL: ${QWENPAW_BASE_URL:-http://qwenpaw:8088}
+      QWENPAW_AGENT_ID: ${QWENPAW_AGENT_ID:-default}
+      OWNER_USER_IDS: ${OWNER_USER_IDS:-}
+      TOOL_ALLOWLIST: ${TOOL_ALLOWLIST:-}
+      BRIDGE_FILES_ROOT: /bridge-files
+    volumes:
+      - ${PROJECT_SOURCE:?}/astrbot_plugin_qwenpaw_bridge:/AstrBot/data/plugins/astrbot_plugin_qwenpaw_bridge:ro
+      - ${INSTALL_ROOT:?}/state/bridge-files:/bridge-files
+    networks:
+      combined:
+        aliases: [astrbot]
+
+networks:
+  combined:
+    external: true
+    name: ${BRIDGE_NETWORK:-bot-combined-network}

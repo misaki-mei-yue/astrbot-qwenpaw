@@ -1,0 +1,9 @@
+name: astrbot_plugin_qwenpaw_bridge
+display_name: AstrBot + QwenPaw 桥接
+desc: 微信和QQ入口、原插件命令、真实插件工具与QwenPaw会话桥接。首版仅文本。
+version: 0.1.0
+author: AstrBot-QwenPaw contributors
+astrbot_version: ">=4.25.1,<4.26"
+support_platforms:
+  - weixin_oc
+  - aiocqhttp

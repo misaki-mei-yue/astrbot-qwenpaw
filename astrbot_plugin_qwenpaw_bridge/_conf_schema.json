@@ -1,0 +1,13 @@
+{
+  "enabled": {"description": "启用桥接", "type": "bool", "default": true},
+  "owner_user_ids": {"description": "允许使用的用户ID", "type": "list", "default": [], "hint": "默认空：拒绝聊天。通过 /paw whoami 查询自己的ID。OWNER_USER_IDS环境变量优先。"},
+  "enabled_platforms": {"description": "允许的平台类型", "type": "list", "default": ["weixin_oc", "aiocqhttp"]},
+  "tool_allowlist": {"description": "允许导出的AstrBot工具名", "type": "list", "default": [], "hint": "默认空禁用工具；明确填 * 可启用所有符合会话范围的插件/MCP工具。TOOL_ALLOWLIST环境变量优先。"},
+  "qwenpaw_url": {"description": "QwenPaw内网地址", "type": "string", "default": "http://qwenpaw:8088", "hint": "QWENPAW_BASE_URL环境变量优先。"},
+  "agent_id": {"description": "QwenPaw Agent ID", "type": "string", "default": "default", "hint": "QWENPAW_AGENT_ID环境变量优先。"},
+  "bridge_token": {"description": "私有桥接鉴权密钥", "type": "string", "default": "", "hint": "推荐使用BRIDGE_TOKEN环境变量。至少32字符随机密钥，禁止提交到Git。"},
+  "runtime_token": {"description": "QwenPaw内部运行时密钥", "type": "string", "default": "", "hint": "推荐使用QWENPAW_RUNTIME_INTERNAL_TOKEN环境变量。"},
+  "state_path": {"description": "独立桥接状态数据库", "type": "string", "default": "/AstrBot/data/plugin_data/qwenpaw_bridge/bridge.sqlite3"},
+  "chat_timeout": {"description": "单次会话等待秒数", "type": "int", "default": 900},
+  "tool_timeout": {"description": "工具总执行秒数", "type": "int", "default": 120}
+}

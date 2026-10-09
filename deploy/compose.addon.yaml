@@ -1,0 +1,96 @@
+name: ${COMPOSE_PROJECT_NAME:-bot-combined-addon}
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: 10m
+    max-file: "3"
+
+services:
+  qwenpaw:
+    # Local build tag, not a claimed upstream registry tag.
+    image: bot-combined/qwenpaw:2.2.1-local
+    build:
+      context: https://github.com/agentscope-ai/QwenPaw.git#cae5773707b26ab2fd00903f84b712387894b256
+      dockerfile: deploy/Dockerfile
+    container_name: bot-qwenpaw
+    init: true
+    restart: unless-stopped
+    environment:
+      TZ: Asia/Shanghai
+      QWENPAW_PORT: "8088"
+      QWENPAW_AGENT_ID: ${QWENPAW_AGENT_ID:-default}
+      QWENPAW_ENABLED_CHANNELS: console,astrbot
+      QWENPAW_RUNTIME_INTERNAL_TOKEN: ${QWENPAW_RUNTIME_INTERNAL_TOKEN:?Run deploy/setup.sh first}
+      QWENPAW_AUTH_ENABLED: ${QWENPAW_AUTH_ENABLED:-false}
+      ASTRBOT_BRIDGE_URL: http://astrbot:9186
+      BRIDGE_TOKEN: ${BRIDGE_TOKEN:?Run deploy/setup.sh first}
+      BRIDGE_FILES_ROOT: /bridge-files
+    expose: ["8088"]
+    volumes:
+      - ${INSTALL_ROOT:?}/state/qwenpaw/working:/app/working
+      - ${INSTALL_ROOT:?}/state/qwenpaw/secret:/app/working.secret
+      - ${INSTALL_ROOT:?}/state/qwenpaw/backups:/app/working.backups
+      - ${PROJECT_SOURCE:?}/qwenpaw_plugin_astrbot_bridge:/app/working/plugins/qwenpaw_plugin_astrbot_bridge:ro
+      - ${INSTALL_ROOT:?}/state/bridge-files:/bridge-files
+    shm_size: 256m
+    mem_limit: ${QWENPAW_MEMORY:-1536m}
+    memswap_limit: ${QWENPAW_SWAP:-3072m}
+    cpus: "1.5"
+    pids_limit: 1024
+    security_opt:
+      - no-new-privileges:true
+    logging: *logging
+    networks:
+      bridge:
+        aliases: [qwenpaw]
+
+  console:
+    # The runtime token also protects HTML/WebSockets. This loopback-only proxy
+    # injects that header without putting the secret in the browser or its URL.
+    image: caddy:2.11.7-alpine
+    container_name: bot-qwenpaw-console
+    restart: unless-stopped
+    environment:
+      QWENPAW_RUNTIME_INTERNAL_TOKEN: ${QWENPAW_RUNTIME_INTERNAL_TOKEN:?Run deploy/setup.sh first}
+    ports:
+      - "127.0.0.1:8088:8088"
+    volumes:
+      - ${PROJECT_SOURCE:?}/deploy/console.Caddyfile:/etc/caddy/Caddyfile:ro
+    mem_limit: 128m
+    pids_limit: 128
+    security_opt:
+      - no-new-privileges:true
+    logging: *logging
+    networks: [bridge]
+
+  napcat:
+    image: mlikiowa/napcat-docker:v4.18.33
+    container_name: bot-napcat
+    hostname: qq-bridge
+    init: true
+    restart: unless-stopped
+    environment:
+      TZ: Asia/Shanghai
+      NAPCAT_UID: "0"
+      NAPCAT_GID: "0"
+    ports:
+      - "127.0.0.1:6099:6099"
+    volumes:
+      - ${INSTALL_ROOT:?}/state/napcat/config:/app/napcat/config
+      - ${INSTALL_ROOT:?}/state/napcat/qq:/app/.config/QQ
+      - ${INSTALL_ROOT:?}/state/bridge-files:/bridge-files:ro
+    shm_size: 128m
+    mem_limit: ${NAPCAT_MEMORY:-768m}
+    memswap_limit: ${NAPCAT_SWAP:-1536m}
+    cpus: "1.0"
+    pids_limit: 512
+    ulimits:
+      core: 0
+    logging: *logging
+    networks: [bridge]
+
+networks:
+  bridge:
+    name: ${BRIDGE_NETWORK:-bot-combined-network}
+    external: true
