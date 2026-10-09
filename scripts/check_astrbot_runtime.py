@@ -9,7 +9,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
-from datetime import datetime, timedelta, timezone
 import hashlib
 import importlib.metadata
 import ipaddress
@@ -21,7 +20,6 @@ import socket
 import sys
 import tempfile
 import uuid
-from urllib.parse import parse_qs, urlsplit
 
 ASTRBOT_COMMIT = "d609f23b7136e30adf38929bac6402a581148ffc"
 ASTRBOT_FRAMEWORK_SHA256 = "82bdde023cb497eccb91ad19b4720d5ee6642f623ac7cb2f693562a45b094154"
@@ -192,22 +190,6 @@ async def exercise(source: Path, project: Path, run_root: Path) -> dict:
     app.router.add_post("/api/agents/default/console/chat", fake_chat)
     app.router.add_get("/api/approval/list", lambda request: web.json_response([]))
 
-    async def fake_management(request):
-        if request.headers.get("X-QwenPaw-Runtime-Token") != runtime_token:
-            return web.json_response({"error": "unauthorized"}, status=401)
-        if request.path == "/api/version":
-            return web.json_response("2.2.1")
-        if request.path == "/api/healthz":
-            return web.json_response({"status": "ok", "agents_loaded": ["default"]})
-        if request.path == "/api/models/active":
-            return web.json_response({"active_llm": {"provider_id": "local-runtime-probe", "model": "runtime-test"}})
-        if request.path.endswith("/memory/runtime-status"):
-            return web.json_response({"worker": {"status": "idle"}, "auto_memory": {"enabled": True}})
-        if request.path.endswith("/cron/jobs") or request.path.endswith("/tools") or request.path.endswith("/workspace/memory"):
-            return web.json_response([])
-        return web.json_response({"error": "missing-test-route"}, status=404)
-
-    app.router.add_get("/api/{tail:.*}", fake_management)
     runner = web.AppRunner(app, access_log=None)
     await runner.setup()
     site = web.TCPSite(runner, "127.0.0.1", 0)
@@ -261,51 +243,6 @@ async def exercise(source: Path, project: Path, run_root: Path) -> dict:
         assert bridge.owners == {"runtime-test-owner"}
         assert bridge.tool_allowlist == {"bridge_test_lookup"}
         checks.append("genuine_plugin_loader_and_dashboard_config")
-        expected_routes = {
-            "status": "GET", "tasks": "GET", "memory": "GET", "memory/read": "POST",
-            "tools": "GET", "tasks/create": "POST", "tasks/control": "POST",
-        }
-        registered = {route: methods for route, _, methods, _ in core.star_context.registered_web_apis
-                      if route.startswith(bridge._workbench.prefix)}
-        assert registered == {bridge._workbench.prefix + key: [method] for key, method in expected_routes.items()}
-        checks.append("workbench_seven_native_api_registrations")
-
-        # Instantiate the genuine Dashboard and use its native Quart test client;
-        # no HTTP management port or production credential is involved.
-        import jwt
-        from astrbot.dashboard.server import AstrBotDashboard
-        dashboard_dist = run_root / "empty-dashboard-dist"
-        dashboard_dist.mkdir()
-        dashboard = AstrBotDashboard(core, db_helper, core.dashboard_shutdown_event, str(dashboard_dist))
-        dashboard_jwt = jwt.encode({"username": "runtime-test-admin", "exp": datetime.now(timezone.utc) + timedelta(minutes=5)}, dashboard._jwt_secret, algorithm="HS256")
-        dashboard_client = dashboard.app.test_client()
-        status_url = "/api/plug/" + bridge._workbench.prefix + "status"
-        response = await dashboard_client.get(status_url)
-        assert response.status_code == 401
-        headers = {"Authorization": "Bearer " + dashboard_jwt}
-        response = await dashboard_client.get(status_url, headers=headers)
-        status_body = await response.get_json()
-        assert response.status_code == 200 and status_body["data"]["qwenpaw_ready"] is True, status_body
-        assert response.headers["Cache-Control"] == "no-store"
-        checks.append("genuine_dashboard_jwt_guards_workbench")
-        response = await dashboard_client.post("/api/plug/" + bridge._workbench.prefix + "tasks/create", json={}, headers={**headers, "Origin": "https://different-test-origin.example", "Sec-Fetch-Site": "cross-site"})
-        assert response.status_code == 403
-        checks.append("workbench_cross_site_mutation_denied")
-        response = await dashboard_client.get("/api/plugin/page/entry?name=astrbot_plugin_qwenpaw_bridge&page=workbench", headers=headers)
-        entry = await response.get_json()
-        assert response.status_code == 200 and entry["status"] == "ok", entry
-        page_path = entry["data"]["content_path"]
-        response = await dashboard_client.get(page_path)
-        html = (await response.get_data()).decode("utf-8")
-        assert response.status_code == 200 and "bridge-sdk.js" in html and "app.js" in html
-        asset_token = parse_qs(urlsplit(page_path).query)["asset_token"][0]
-        response = await dashboard_client.get("/api/plugin/page/bridge-sdk.js?asset_token=" + asset_token)
-        sdk = (await response.get_data()).decode("utf-8")
-        assert response.status_code == 200 and "apiGet" in sdk and "apiPost" in sdk
-        checks.append("genuine_plugin_page_discovery_and_sdk_asset_access")
-        response = await dashboard_client.get(status_url, headers={"Authorization": "Bearer " + asset_token})
-        assert response.status_code == 401
-        checks.append("page_asset_token_cannot_authorize_management_api")
         transport = ProbePlatform()
         core.platform_manager.platform_insts.append(transport)
         scheduler = core.pipeline_scheduler_mapping["default"]
@@ -345,8 +282,10 @@ async def exercise(source: Path, project: Path, run_root: Path) -> dict:
     finally:
         if initialized:
             await core.stop()
-            assert not any(route.startswith(bridge._workbench.prefix) for route, _, _, _ in core.star_context.registered_web_apis)
-            checks.append("workbench_routes_removed_on_plugin_termination")
+            assert bridge._runner is None and bridge._client is None
+            assert bridge._store is None and bridge._approval_task is None
+            assert not bridge._active and not bridge._chat_locks and not bridge._delivery_locks
+            checks.append("genuine_bridge_lifecycle_cleanup")
         await runner.cleanup()
         with contextlib.suppress(Exception):
             await html_renderer.network_strategy.terminate()
@@ -357,12 +296,12 @@ async def exercise(source: Path, project: Path, run_root: Path) -> dict:
     source_hashes = {name: hashlib.sha256((source / name).read_bytes()).hexdigest() for name in (
         "astrbot/core/core_lifecycle.py", "astrbot/core/star/star_manager.py",
         "astrbot/core/star/context.py", "astrbot/core/astr_agent_tool_exec.py",
-        "astrbot/dashboard/server.py", "astrbot/dashboard/routes/plugin.py",
+        "astrbot/core/platform/astr_message_event.py",
     )}
     return {"astrbot_version": "4.25.1", "astrbot_commit": ASTRBOT_COMMIT,
             "framework_tree_sha256": framework_hash(source), "python_version": sys.version.split()[0], "checks": checks, "check_count": len(checks), "dependencies": packages,
             "source_sha256": source_hashes,
-            "scope": "Genuine AstrBot core lifecycle, plugin loader, command filters, pipeline, tool executor and hooks, native messages, Context proactive route, Dashboard JWT middleware, Page discovery and SDK asset serving. Only platform transport and QwenPaw HTTP responses are local test boundaries. No real QQ/WeChat, external model, browser, production data or rendered dashboard UI is exercised."}
+            "scope": "Genuine AstrBot core lifecycle, plugin loader, command filters, pipeline, tool executor and hooks, native messages, Context proactive route and bridge lifecycle cleanup. Only platform transport and QwenPaw HTTP responses are local test boundaries. No real QQ/WeChat, external model, browser, production data or dashboard UI is exercised."}
 
 
 def main():

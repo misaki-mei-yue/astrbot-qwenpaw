@@ -13,7 +13,7 @@
 
 QwenPaw 使用本地构建标签 `bot-combined/qwenpaw:2.2.1-local`；这不是声称存在一个上游 `v2.2.1` 镜像。官方 Dockerfile 安装 Chromium、Playwright 使用的系统浏览器、Xvfb、Xfce 和中文字体，保留完整浏览器/桌面运行依赖。固定应用提交不等于锁定所有系统包；验证后应记录本地镜像 ID/上游 RepoDigest，并保留构建产物用于复现。[官方源文件](https://github.com/agentscope-ai/QwenPaw/blob/cae5773707b26ab2fd00903f84b712387894b256/deploy/Dockerfile)。
 
-使用 Linux amd64/arm64、Docker Engine、Compose v2 或更新版本、Python 3 和足够磁盘空间。估计至少 4 GB 内存可作为起点，8 GB 给浏览器和同机其他服务更多余量；这是容量建议，尚未实测。2 GB 可以准备配置，但建议扩容后才启动整套服务。镜像构建会用到外网和额外磁盘空间，预留 8 GB 以上可用空间。新 `.env` 的 `*_MEMORY` 和 `*_SWAP` 可按实测修改；`memswap_limit` 是 RAM 加 swap 的总量，必须不小于对应 RAM 限额。
+使用 Linux amd64/arm64、Docker Engine、Compose v2 或更新版本、Python 3 和足够磁盘空间。产品保留完整文件、记忆和浏览器能力；硬件容量、任务并发与容器限额按实际使用测试和配置。镜像构建会用到外网和额外磁盘空间，预留 8 GB 以上可用空间。新 `.env` 的 `*_MEMORY` 和 `*_SWAP` 是可修改的部署参数；`memswap_limit` 是 RAM 加 swap 的总量，必须不小于对应 RAM 限额。
 
 先运行只读检查：
 
@@ -76,7 +76,7 @@ python3 deploy/preflight.py --disk-path /opt
    docker compose --env-file /opt/bot/combined/.env -f deploy/compose.addon.yaml up -d
    ```
 
-原 `bot` 域名和网站服务不需要改变。组合工作台从现有 AstrBot 后台的插件页面进入；QwenPaw 原生控制台和 NapCat 管理页仍通过服务器端口转发访问。若要为这些原生后台增设公网管理域名，应另行设置 HTTPS、访问认证和受限代理网络；本仓库不会自动改动现有 Caddy。
+原 `bot` 域名和网站服务不需要改变。使用已有 AstrBot 原生后台管理平台连接和插件，使用 QwenPaw 原生 Console 管理模型、记忆、工具和任务；两边都保留官方页面。QwenPaw Console 和 NapCat 管理页通过下文的服务器端口转发访问。若要为原生后台增设公网管理域名，应另行设置 HTTPS、访问认证和受限代理网络；本仓库不会自动改动现有 Caddy。
 
 ## B：全新安装
 
@@ -98,9 +98,27 @@ docker compose --env-file /opt/bot-combined/.env -f deploy/compose.yaml up -d
 3. QwenPaw 初次启动会通过官方入口初始化自己的空数据目录。默认 agent ID 是 `default`，不是 `main`。在控制台配置有效的模型提供商和模型；不要把 AstrBot 密钥自动抄到另一服务。
 4. QwenPaw 会自动发现 `astrbot-bridge` 插件，无需给插件编造 `enabled` 开关。在 `default` agent 的 Channels 中启用 `astrbot`。插件已只读挂载到 `/app/working/plugins/qwenpaw_plugin_astrbot_bridge`；回调地址 `http://astrbot:9186` 和回调密钥由环境变量提供。需要手动编辑时，仅合并 `/app/working/workspaces/default/agent.json` 中 `channels.astrbot = {"enabled": true}`，保留所有其他字段；不要整份替换未知 `agent.json`。Native tool 使用环境变量 `ASTRBOT_BRIDGE_URL` 和 `BRIDGE_TOKEN`。
 5. 在 AstrBot 中发送普通文字先验证自己的请求，再验证浏览器任务和插件工具。附件按下方步骤测试；桥接支持受限的会话附件，尚需实际 QQ/微信联调确认平台上传结果。微信和 QQ 会话各自隔离；不同账号的 ID 不应随意合并。
-6. 在 AstrBot 插件页面打开[组合工作台](workbench.md)，选择已经登记的会话创建主动任务。工作台生成的任务保持 `runtime.tool_safety=true`。也可使用 QwenPaw 原生 Cron/Heartbeat；对应渠道选 `astrbot`，每个 Cron 的 `runtime.tool_safety` 保持 `true`，它是任务字段，不是 `agent.json` 的任意开关。遇到敏感工具审批应等待所有者批准。
+6. 在 QwenPaw 原生 `/cron-jobs` 页面创建主动任务，选择已登记的 `astrbot` 频道、用户和桥接会话。固定版本的原生新建表单默认 `mode=stream`、`tool_safety=false`；需明确选 `final`、开启工具安全和共享会话。允许发送结果时关闭 silent；遇到敏感工具审批等待所有者批准。`runtime.tool_safety` 是每个任务的字段，不是 `agent.json` 的任意开关。原生 Heartbeat、记忆设置和工具管理仍使用 QwenPaw 自己的页面，详见[原生页面分工](qwenpaw.md#使用两边原生后台)。
 
-QwenPaw 的 `QWENPAW_RUNTIME_INTERNAL_TOKEN` 保护全部 HTTP/WebSocket 路径。控制台代理只在 loopback 注入这个头，避免把密钥写进浏览器 URL。它不是给公网使用的无认证入口。若开启 QwenPaw 额外用户登录（`QWENPAW_AUTH_ENABLED=true`），桥接调用还需要该用户的 API 凭据；请按桥接插件支持情况配置，不要以关闭 runtime token 解决 401。
+## 原生后台的访问与登录
+
+部署材料已保留两套完整官方后台，当前没有统一登录。AstrBot 后台管理微信/QQ、插件和桥接配置；QwenPaw Console 管理模型、ReMe 记忆、文件、工具和主动任务。QwenPaw 构建使用官方 Dockerfile，包含它自己的前端构建产物。
+
+`console` 服务把服务器 `127.0.0.1:8088` 转到 QwenPaw `8088`，并通过已有 `deploy/console.Caddyfile` 为 HTML、API、SSE 和 WebSocket 请求注入 `X-QwenPaw-Runtime-Token`。它转发原生 Console，不提供另一套管理页面。不要绕过代理直接打开 QwenPaw 容器端口，也不要把内部令牌放进浏览器 URL。
+
+使用可连接服务器的 SSH 客户端时，例如：
+
+```bash
+ssh -N -L 8088:127.0.0.1:8088 -L 6099:127.0.0.1:6099 用户名@服务器地址
+```
+
+保持隧道连接后，在自己电脑打开 `http://127.0.0.1:8088/` 进入 QwenPaw 原生 Console，打开 `http://127.0.0.1:6099/webui/` 进入 NapCat。全新 AstrBot 若需要同样访问，可增加 `-L 6185:127.0.0.1:6185`，再打开本机 `http://127.0.0.1:6185/`；已有安装继续使用它现有的 AstrBot 管理入口与原账号。
+
+仅能使用阿里云网页终端时，网页终端不会自动建立到你电脑的端口隧道。需使用管理工具提供的端口转发，或另行将原生 Console 接到有认证和 HTTPS 的管理域名。现有 Compose 没有配置该公网域名；不要把 `127.0.0.1:8088` 改为公开监听来代替认证。
+
+当前 `.env` 和 Compose 默认 `QWENPAW_AUTH_ENABLED=false`，因此 QwenPaw Console 不额外要求它自己的账号登录，访问权限来自隧道或外层认证。AstrBot 和 NapCat 继续使用各自原生登录机制。内部服务仍由 `QWENPAW_RUNTIME_INTERNAL_TOKEN` 保护，代理补头只解决这一层访问。
+
+QwenPaw 2.2.1 支持原生单用户账号：启用 `QWENPAW_AUTH_ENABLED=true` 后，可在 `/login` 首次注册，之后登录；官方也支持 `QWENPAW_AUTH_USERNAME` / `QWENPAW_AUTH_PASSWORD` 首次自动建号。**本版桥接尚未支持该额外登录 Bearer token**，且现有 Compose 没有传入这两个建号变量。原生账号注册后，内部 runtime header 不会绕过用户登录认证，AstrBot 请求会缺少第二层凭据；不能仅打开这个开关就认为整套配置齐全。当前默认访问方式适用于隧道/受认证外层代理，新增公网入口应保留内部边界与完整访问认证。
 
 ## 会话附件和文件权限
 

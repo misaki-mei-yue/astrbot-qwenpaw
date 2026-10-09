@@ -67,12 +67,6 @@ class BridgeStore:
         ).fetchone()
         return dict(row) if row else None
 
-    def list_sessions(self, limit: int = 500) -> list[dict]:
-        """Recent known routes, for the authenticated management page."""
-        return [dict(row) for row in self.db.execute(
-            "SELECT * FROM routes ORDER BY rowid DESC LIMIT ?", (min(max(limit, 1), 500),)
-        ).fetchall()]
-
     def claim(self, category: str, key: str) -> bool:
         if not category or not key or len(key) > 512:
             raise ValueError("Invalid idempotency key")

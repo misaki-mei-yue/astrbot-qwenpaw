@@ -28,7 +28,6 @@ from astrbot.api.star import Context, Star
 
 from .bridge_core import BridgeStore, QwenPawClient
 from .media_bridge import MediaBridge, MediaFailure, provider_component
-from .workbench import Workbench
 
 
 class BridgeFault(Exception):
@@ -100,7 +99,6 @@ class QwenPawBridge(Star):
         self._active: dict[str, ActiveTurn] = {}
         self._chat_locks: dict[str, asyncio.Lock] = {}
         self._delivery_locks: dict[str, asyncio.Lock] = {}
-        self._workbench = Workbench(self)
         self.chat_timeout = max(30, min(int(config.get("chat_timeout", 900)), 3600))
         self.tool_timeout = max(5, min(int(config.get("tool_timeout", 120)), 600))
         roots = _setting_list(config, "source_roots", "BRIDGE_SOURCE_ROOTS")
@@ -122,7 +120,6 @@ class QwenPawBridge(Star):
 
     async def initialize(self):
         if not self.enabled:
-            self._workbench.register()
             return
         if not re.fullmatch(r"[A-Za-z0-9._~-]{32,256}", self.token or ""):
             raise ValueError("Set a random BRIDGE_TOKEN with at least 32 characters.")
@@ -147,7 +144,6 @@ class QwenPawBridge(Star):
         try:
             await self._runner.setup()
             await web.TCPSite(self._runner, "0.0.0.0", 9186).start()
-            self._workbench.register()
         except BaseException:
             await self.terminate()
             raise
@@ -156,7 +152,6 @@ class QwenPawBridge(Star):
 
     async def terminate(self):
         self.enabled = False
-        self._workbench.unregister()
         if self._approval_task:
             self._approval_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
