@@ -76,7 +76,7 @@ python3 deploy/preflight.py --disk-path /opt
    docker compose --env-file /opt/bot/combined/.env -f deploy/compose.addon.yaml up -d
    ```
 
-原 `bot` 域名和网站服务不需要改变。新管理页面通过服务器端口转发访问。若要为 QwenPaw/NapCat 增设公网管理域名，应另行设置 HTTPS、访问认证和受限代理网络；本仓库不会自动改动现有 Caddy。
+原 `bot` 域名和网站服务不需要改变。组合工作台从现有 AstrBot 后台的插件页面进入；QwenPaw 原生控制台和 NapCat 管理页仍通过服务器端口转发访问。若要为这些原生后台增设公网管理域名，应另行设置 HTTPS、访问认证和受限代理网络；本仓库不会自动改动现有 Caddy。
 
 ## B：全新安装
 
@@ -93,12 +93,12 @@ docker compose --env-file /opt/bot-combined/.env -f deploy/compose.yaml up -d
 
 ## 两端初次配置
 
-1. 在 AstrBot 确认桥接插件加载。通过自己的微信/QQ 私聊发送 `/paw whoami`，取得自己的平台用户 ID；将它填入新私密 `.env` 的 `OWNER_USER_IDS`，多个 ID 逗号分隔。保持文件 0600，不把用户标识写进公共仓库。按所选部署模式的 AstrBot 命令重新应用环境变量。
+1. 在 AstrBot 确认桥接插件加载。通过自己的微信/QQ 私聊发送 `/paw whoami`，取得自己的平台用户 ID，填入桥接插件的“允许使用的用户ID”。也可以填入新私密 `.env` 的 `OWNER_USER_IDS`，多个 ID 逗号分隔；非空环境变量优先，空值使用后台设置。保持文件 0600，不把用户标识写进公共仓库。后台配置按 AstrBot 流程重新加载；改环境变量则按所选部署模式重新应用 AstrBot 容器配置。
 2. `TOOL_ALLOWLIST` 初始为空，禁止由 QwenPaw 调用 AstrBot 插件工具。先选择需要的具体工具名称；`*` 是显式开放全部工具，不是默认值。普通插件指令仍由 AstrBot 自己处理。QwenPaw 使用自己的工作区；`/bridge-files` 是专用附件共享，不挂载其他项目或整个宿主数据。
 3. QwenPaw 初次启动会通过官方入口初始化自己的空数据目录。默认 agent ID 是 `default`，不是 `main`。在控制台配置有效的模型提供商和模型；不要把 AstrBot 密钥自动抄到另一服务。
 4. QwenPaw 会自动发现 `astrbot-bridge` 插件，无需给插件编造 `enabled` 开关。在 `default` agent 的 Channels 中启用 `astrbot`。插件已只读挂载到 `/app/working/plugins/qwenpaw_plugin_astrbot_bridge`；回调地址 `http://astrbot:9186` 和回调密钥由环境变量提供。需要手动编辑时，仅合并 `/app/working/workspaces/default/agent.json` 中 `channels.astrbot = {"enabled": true}`，保留所有其他字段；不要整份替换未知 `agent.json`。Native tool 使用环境变量 `ASTRBOT_BRIDGE_URL` 和 `BRIDGE_TOKEN`。
 5. 在 AstrBot 中发送普通文字先验证自己的请求，再验证浏览器任务和插件工具。附件按下方步骤测试；桥接支持受限的会话附件，尚需实际 QQ/微信联调确认平台上传结果。微信和 QQ 会话各自隔离；不同账号的 ID 不应随意合并。
-6. 主动任务通过 QwenPaw 原生 Cron/Heartbeat 配置，对应渠道选 `astrbot` 和已经登记的会话。每个 Cron 的 `runtime.tool_safety` 保持 `true`；它是任务的字段，不是可以随意塞进 `agent.json` 的开关。遇到敏感工具审批应等待所有者批准，不配置自动放行。
+6. 在 AstrBot 插件页面打开[组合工作台](workbench.md)，选择已经登记的会话创建主动任务。工作台生成的任务保持 `runtime.tool_safety=true`。也可使用 QwenPaw 原生 Cron/Heartbeat；对应渠道选 `astrbot`，每个 Cron 的 `runtime.tool_safety` 保持 `true`，它是任务字段，不是 `agent.json` 的任意开关。遇到敏感工具审批应等待所有者批准。
 
 QwenPaw 的 `QWENPAW_RUNTIME_INTERNAL_TOKEN` 保护全部 HTTP/WebSocket 路径。控制台代理只在 loopback 注入这个头，避免把密钥写进浏览器 URL。它不是给公网使用的无认证入口。若开启 QwenPaw 额外用户登录（`QWENPAW_AUTH_ENABLED=true`），桥接调用还需要该用户的 API 凭据；请按桥接插件支持情况配置，不要以关闭 runtime token 解决 401。
 
@@ -123,6 +123,14 @@ AstrBot 入站本地文件来源默认只允许 `/AstrBot/data/temp`（`BRIDGE_S
 验收时，用自己的 QQ/微信会话分别发送一张小图片和一个小文件，再让 QwenPaw 生成一个 outbound 文本文件并发送回来。QQ 可使用图片、音频、视频和文件组件；AstrBot 4.25.1 的微信适配器原生发送图片、视频和文件，音频作为文件发送。检查重复回调只投递一次、超过限额被拒绝、跨会话路径和链接文件被拒绝；这部分真实平台验收尚不能由静态测试代替。已有普通 AstrBot 插件的任意本地文件路径兼容性需另行检查。
 
 ## 查看状态和保留数据
+
+从仓库源码目录运行只读诊断，优先取得不含密钥、QQ 号码或聊天内容的结构化结果：
+
+```bash
+python3 deploy/doctor.py --mode existing
+```
+
+全新安装用 `--mode fresh`。它核对容器、内网连接和鉴权、指定智能体就绪、共享目录挂载、用户 / 工具 / 频道配置。只执行读取和健康检查，不重启容器、不调用模型、不发送消息、不写配置。非默认容器名可用 `--astrbot-container` 等参数覆盖；`--help` 列出选项。该诊断尚未在实际 Linux Docker 部署中运行，单元测试使用受控 Docker 响应；`ok` 不等于真实 QQ / 微信已经成功登录和收发。
 
 按选定模式将 `compose.yaml` 换成 `compose.addon.yaml`，`.env` 路径也对应更换：
 

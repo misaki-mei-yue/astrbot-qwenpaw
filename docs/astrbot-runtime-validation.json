@@ -1,0 +1,41 @@
+{
+  "astrbot_version": "4.25.1",
+  "astrbot_commit": "d609f23b7136e30adf38929bac6402a581148ffc",
+  "framework_tree_sha256": "82bdde023cb497eccb91ad19b4720d5ee6642f623ac7cb2f693562a45b094154",
+  "python_version": "3.12.14",
+  "checks": [
+    "genuine_plugin_loader_and_dashboard_config",
+    "workbench_seven_native_api_registrations",
+    "genuine_dashboard_jwt_guards_workbench",
+    "workbench_cross_site_mutation_denied",
+    "genuine_plugin_page_discovery_and_sdk_asset_access",
+    "page_asset_token_cannot_authorize_management_api",
+    "ordinary_plugin_command_preserved",
+    "genuine_paw_command_registration",
+    "genuine_function_tool_executor_and_hooks",
+    "tool_callback_idempotency",
+    "pipeline_bridge_reply_once",
+    "platform_message_replay_deduplicated",
+    "nonowner_denied",
+    "genuine_context_proactive_route_and_deduplication",
+    "workbench_routes_removed_on_plugin_termination"
+  ],
+  "check_count": 15,
+  "dependencies": {
+    "aiohttp": "3.14.4",
+    "jsonschema": "4.26.0",
+    "mcp": "1.30.0",
+    "pydantic": "2.13.5",
+    "sqlmodel": "0.0.48",
+    "openai": "3.27.0"
+  },
+  "source_sha256": {
+    "astrbot/core/core_lifecycle.py": "ff7b4710960aa85a19642bc63ad494d7874f30839ffcb8a9ca3c05bcce7c0d46",
+    "astrbot/core/star/star_manager.py": "0b55bbea2964434cb099bdfa5973e453208d0baec70f4b9d595ac05b6066d87c",
+    "astrbot/core/star/context.py": "47ccd115e278d3376642c90065b584b9f40fe9da60107d66db72b7691750bb57",
+    "astrbot/core/astr_agent_tool_exec.py": "a76ee677c99333f65a17bd446ebb157fd5c9b5ab45af59868934e9c1e396e033",
+    "astrbot/dashboard/server.py": "a60d531c2c85ec93ff1696cb09b5543b277a4cf44ad55f9f48539917c58b14b3",
+    "astrbot/dashboard/routes/plugin.py": "537103f4b3d67b7f8e96c3dd37ebc0c866cb493785d2d372badf2b71bdc32831"
+  },
+  "scope": "Genuine AstrBot core lifecycle, plugin loader, command filters, pipeline, tool executor and hooks, native messages, Context proactive route, Dashboard JWT middleware, Page discovery and SDK asset serving. Only platform transport and QwenPaw HTTP responses are local test boundaries. No real QQ/WeChat, external model, browser, production data or rendered dashboard UI is exercised."
+}

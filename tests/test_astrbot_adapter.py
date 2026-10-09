@@ -151,6 +151,20 @@ class CallToolResult:
 
 
 class AdapterTests(unittest.IsolatedAsyncioTestCase):
+    async def test_empty_environment_uses_dashboard_owner_and_tool_settings(self):
+        with patch.dict("os.environ", {"OWNER_USER_IDS": "  ", "TOOL_ALLOWLIST": ""}):
+            config = {"owner_user_ids": ["dashboard-owner"], "tool_allowlist": ["lookup"]}
+            self.assertEqual(adapter._setting_list(config, "owner_user_ids", "OWNER_USER_IDS"), {"dashboard-owner"})
+            self.assertEqual(adapter._setting_list(config, "tool_allowlist", "TOOL_ALLOWLIST"), {"lookup"})
+            self.assertEqual(adapter._setting_list({}, "owner_user_ids", "OWNER_USER_IDS"), set())
+            self.assertEqual(adapter._setting_list({}, "tool_allowlist", "TOOL_ALLOWLIST"), set())
+
+    async def test_nonempty_environment_remains_explicit_override(self):
+        with patch.dict("os.environ", {"OWNER_USER_IDS": "env-owner", "TOOL_ALLOWLIST": "*"}):
+            config = {"owner_user_ids": ["dashboard-owner"], "tool_allowlist": ["lookup"]}
+            self.assertEqual(adapter._setting_list(config, "owner_user_ids", "OWNER_USER_IDS"), {"env-owner"})
+            self.assertEqual(adapter._setting_list(config, "tool_allowlist", "TOOL_ALLOWLIST"), {"*"})
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.context = types.SimpleNamespace(send_message=AsyncMock(return_value=True))
