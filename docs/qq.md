@@ -2,9 +2,21 @@
 
 NapCat 登录 QQ，负责 OneBot v11 通信；AstrBot 接收消息并保留原插件生态，选择 QwenPaw 任务时再交给桥接插件。不用运行第二个 AstrBot，也不用合并旧版聊天数据库。
 
+## Windows 本地组合包
+
+1. 双击 `start.cmd` 完成启动后，打开 **http://localhost:18080/**，切换到「QQ 登录」原生页面。组合包只发布这个本机端口，不需要打开 6099 或建立服务器隧道。
+2. NapCat WebUI 第一次要求输入的是它自己的 **WebUI Token / 登录密码**，不是 `ONEBOT_TOKEN`，也没有可依赖的固定 `napcat` 默认密码。在自己的电脑上用记事本打开包内 `runtime/state/napcat/config/webui.json`，仅把 `token` 字段的值复制到登录框。也可在 Docker Desktop 中打开本目录对应项目的 NapCat 日志，查找最新一次启动的 `WebUi Token:`。这是私密登录信息，不要贴到聊天、截图或仓库。
+3. 在登录后的页面用手机 QQ 扫码确认。验证和账户选择由你完成；首次扫码前通常还没有账号专属的 OneBot 配置。
+4. **首次全新准备现在同时配置了两端。** AstrBot 会有启用的 `qq` / OneBot v11 机器人，监听容器内部 `0.0.0.0:6199`；NapCat 默认配置连接 `ws://astrbot:6199/ws`，两端使用同一随机通信令牌。扫码后在 NapCat 网络配置里确认下表设置，账号专属配置可能优先于默认配置。不需要在电脑或云安全组开放 6199。
+5. 若需要进入 AstrBot 检查机器人，用户名默认是 `astrbot`；**4.25.1 会生成随机初始密码，不是 `astrbot/astrbot`**。在 Docker Desktop 打开本目录对应项目的 AstrBot 日志，查找最新的 `Initial password:`，只在自己电脑查看并复制到登录框。登录后由你在原生页面输入新密码；组合包不代你修改密码，也不从配置中的哈希恢复明文。
+
+已有 `runtime/state/astrbot/cmd_config.json` 或 NapCat 配置会保持原样；重跑准备脚本不会补写或覆盖它们。若旧组合包已启动过、AstrBot 机器人列表仍为空，请按下文的 OneBot v11 字段手动添加。此时通信令牌来自包内私密 `runtime/.env` 的 `ONEBOT_TOKEN`，与 WebUI 登录密码是两回事。不要删除 `runtime` 重新初始化。
+
+## 服务器或已有 AstrBot 接入
+
 1. 根据 [部署说明](deployment.md) 选择 fresh 或 add-on 模式，完成准备并启动服务。通过服务器端口转发打开 `http://127.0.0.1:6099/webui/`，在自己的服务器日志中读取 NapCat 登录密码。公开管理入口需要单独的 HTTPS 和认证，本项目没有发布公网 6099。
 2. 在 WebUI 选择 QQ 的二维码登录，用手机 QQ 扫码确认。扫码和账户验证由你操作；项目不带预设账号。新版本可能在登录后刷新 WebUI 密码并要求更换，以界面提示为准。旧 Windows 客户端缓存不拷贝到 Linux；服务器成功后退出旧本机 NapCat。
-3. AstrBot 后台 → 机器人 → 添加 → OneBot v11：ID `qq`、启用、监听 `0.0.0.0`、端口 `6199`。token 填准备脚本生成的 `ONEBOT_TOKEN`（在自己的私密 `.env` 中读取）。
+3. 全新准备已经创建 AstrBot 的 `qq` / OneBot v11 机器人，先在后台检查现有条目，避免重复添加。已有 AstrBot 加装或保留的旧配置需要手动添加：AstrBot 后台 → 机器人 → 添加 → OneBot v11：ID `qq`、启用、监听 `0.0.0.0`、端口 `6199`。token 填准备脚本生成的 `ONEBOT_TOKEN`（在自己的私密 `.env` 中读取）。
 4. NapCat 后台 → 网络配置 → WebSocket 客户端（反向 WS），确认已启用。准备脚本写入的默认设置是：
 
    | 字段 | 值 |

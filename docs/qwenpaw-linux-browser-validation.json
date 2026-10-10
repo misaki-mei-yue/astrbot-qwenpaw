@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "status": "passed",
+  "checks": {
+    "sdk_identity_guest": true,
+    "sdk_context_incognito": true,
+    "sdk_blank_snapshot": true,
+    "sdk_local_dom": true,
+    "sdk_local_click": true,
+    "worker_tool_success": true,
+    "worker_blank_snapshot": true,
+    "worker_local_dom": true,
+    "worker_local_click": true
+  },
+  "scope": {
+    "fresh_guest_contexts": true,
+    "existing_profile_used": false,
+    "external_pages_requested": false,
+    "model_called": false,
+    "platform_messages_sent": false,
+    "target_server_tested": false
+  },
+  "upstream": {
+    "version": "2.2.1",
+    "reference_commit": "cae5773707b26ab2fd00903f84b712387894b256",
+    "verified_file_sha256": {
+      "agents/tools/browser.py": "16b92c484489d38e568bd1f2f5772382f5c7f4c01cae486a5959340c3415abab",
+      "browser/runtime/engine.py": "87ce2c02223ec87ae2d5d65467a6e1af50a7f4f7aba66246b68d7bd01719d481",
+      "browser/runtime/identity.py": "1a38d3ffb065f1d389477dc457ba8442c090b80494273d6eb56b49164d3f52e3",
+      "browser/runtime/launch_resolve.py": "cd5f7879d37ea483b4fad3b9c134361c22db276b53698243e970a841beb09bbc",
+      "browser/control_link/playwright/adapter.py": "93950f7af09bc969b7d2fad54fedf00e3b53da844e9fecfedd913fe401a79ddb",
+      "browser/execution/subprocess_plane.py": "f91b1ccac720f48c7a213504b046a7720f93f447262de8317261d9a8a8d760c1",
+      "browser/execution/worker.py": "107302e5626ae9dfcc00f1990b8420d3d1d1964fc458a4f860b34cb9c0e28fe8",
+      "browser/sdk/facade.py": "4925f0fc301ecb6f681e3046e2341939cc969b6cba52cad6b0adceb03f92a26f",
+      "browser/sdk/page.py": "a4d049de5e10d780f2916c878587c3655f2b0b1e2304578444bd0c44dc6300d9",
+      "browser/tool_entrypoint.py": "3d5a3e5fc3d05e844a9839d0bd8f76df6b632a1e8a6de3a1b1f3a504923da552"
+    }
+  },
+  "runtime": {
+    "python_version": "3.11.2",
+    "os": "Linux",
+    "playwright_version": "1.62.0",
+    "agentscope_version": "2.0.7.post1",
+    "browser_engine_version": "152.0.7977.82"
+  },
+  "cleanup_disconnected_chrome_warning": true
+}

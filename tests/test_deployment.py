@@ -1,5 +1,6 @@
 """Guard secret preservation, isolation, port exposure, and existing-data safety."""
 import ast
+import hashlib
 import importlib.util
 import json
 import os
@@ -23,6 +24,63 @@ spec.loader.exec_module(prepare)
 class PrepareTests(unittest.TestCase):
     def test_read_only_preflight_is_valid_python(self):
         ast.parse((ROOT / "deploy/preflight.py").read_text(encoding="utf-8"))
+
+    def test_fresh_qq_ends_share_onebot_credentials_and_private_listener(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder) / "install"
+            env = prepare.prepare("fresh", root)
+            path = root / "state/astrbot/cmd_config.json"
+            config = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(set(config), {"platform"})
+            self.assertEqual(len(config["platform"]), 1)
+            platform = config["platform"][0]
+            # Keys/types follow the fixed 4.25.1 OneBot v11 template. The
+            # adapter consumes ws_reverse_*; generic host/token keys fail.
+            self.assertEqual(set(platform), {
+                "id", "type", "enable", "ws_reverse_host",
+                "ws_reverse_port", "ws_reverse_token",
+            })
+            self.assertEqual(platform["id"], "qq")
+            self.assertEqual(platform["type"], "aiocqhttp")
+            self.assertIs(platform["enable"], True)
+            self.assertEqual(platform["ws_reverse_host"], "0.0.0.0")
+            self.assertIs(type(platform["ws_reverse_port"]), int)
+            self.assertEqual(platform["ws_reverse_port"], 6199)
+            napcat = json.loads((root / "state/napcat/config/onebot11.json").read_text())
+            client = napcat["network"]["websocketClients"][0]
+            self.assertEqual(client["url"], f"ws://astrbot:{platform['ws_reverse_port']}/ws")
+            self.assertEqual(platform["ws_reverse_token"], client["token"])
+            self.assertEqual(platform["ws_reverse_token"], env["ONEBOT_TOKEN"])
+            self.assertGreaterEqual(len(platform["ws_reverse_token"]), 32)
+            if os.name == "posix":
+                self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+
+    def test_fresh_qq_preparation_never_changes_any_existing_astrbot_config(self):
+        for original in (
+            b"",
+            b"not-valid-json\n",
+            b'\xef\xbb\xbf{"platform": [], "dashboard": {"password": "keep-hash"}}\r\n',
+            b'{"platform": [{"id": "other", "type": "aiocqhttp", "ws_reverse_token": "keep-token"}], "provider": [{"id": "keep-provider"}]}\n',
+        ):
+            with self.subTest(existing=original[:20]), tempfile.TemporaryDirectory() as folder:
+                root = Path(folder) / "install"
+                path = root / "state/astrbot/cmd_config.json"
+                path.parent.mkdir(parents=True)
+                path.write_bytes(original)
+                before = hashlib.sha256(path.read_bytes()).digest()
+                prepare.prepare("fresh", root)
+                prepare.prepare("fresh", root)
+                self.assertEqual(hashlib.sha256(path.read_bytes()).digest(), before)
+
+    def test_generated_astrbot_config_survives_repeated_prepare(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder) / "install"
+            first = prepare.prepare("fresh", root)
+            path = root / "state/astrbot/cmd_config.json"
+            before = path.read_bytes()
+            second = prepare.prepare("fresh", root)
+            self.assertEqual(first["ONEBOT_TOKEN"], second["ONEBOT_TOKEN"])
+            self.assertEqual(path.read_bytes(), before)
 
     def test_credentials_and_napcat_config_survive_second_run(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -153,6 +211,28 @@ class ComposeTests(unittest.TestCase):
     def load(self, name):
         return yaml.safe_load((ROOT / "deploy" / name).read_text(encoding="utf-8"))
 
+    def test_bundle_uses_verified_official_qwen_image_without_source_build(self):
+        services = self.load("compose.bundle.yaml")["services"]
+        self.assertEqual(set(services), {"astrbot", "qwenpaw", "napcat", "gateway"})
+        qwen = services["qwenpaw"]
+        self.assertEqual(qwen["image"], "agentscope-registry.ap-southeast-1.cr.aliyuncs.com/agentscope/qwenpaw@sha256:4127130c41f415434aca5a9ea8eada99d3185d99e2bf181bd95c6e7fb959a3a7")
+        self.assertEqual(qwen["pull_policy"], "missing")
+        self.assertNotIn("build", qwen)
+        self.assertEqual(services["astrbot"]["image"], "soulter/astrbot:v4.25.1")
+        self.assertEqual(services["napcat"]["image"], "mlikiowa/napcat-docker:v4.18.33")
+        self.assertEqual(services["gateway"]["build"]["dockerfile"], "bundle_gateway/Dockerfile")
+
+    def test_source_override_only_changes_qwen_image_and_build_policy(self):
+        overlay = self.load("compose.qwenpaw.source.yaml")
+        self.assertEqual(set(overlay), {"services"})
+        self.assertEqual(set(overlay["services"]), {"qwenpaw"})
+        qwen = overlay["services"]["qwenpaw"]
+        self.assertEqual(set(qwen), {"image", "pull_policy", "build"})
+        self.assertEqual(qwen["image"], "bot-combined/qwenpaw:2.2.1-local")
+        self.assertEqual(qwen["pull_policy"], "never")
+        self.assertEqual(qwen["build"]["context"].split("#")[-1], "cae5773707b26ab2fd00903f84b712387894b256")
+        self.assertEqual(qwen["build"]["dockerfile"], "deploy/Dockerfile")
+
     def test_loopback_management_and_private_protocols(self):
         compose = self.load("compose.yaml")
         for service in compose["services"].values():
@@ -236,6 +316,21 @@ class ComposeCLITests(unittest.TestCase):
         result = subprocess.run(command, text=True, capture_output=True, timeout=30)
         self.assertEqual(result.returncode, 0, result.stderr)
         return json.loads(result.stdout)
+
+    def test_bundle_and_optional_source_pass_cli_with_identical_data_mounts(self):
+        with tempfile.TemporaryDirectory() as folder:
+            env = self.fixture_env(folder)
+            bundle = ROOT / "deploy/compose.bundle.yaml"
+            base = self.render(env, [bundle], "bundle-patch-test")
+            source = self.render(env, [bundle, ROOT / "deploy/compose.qwenpaw.source.yaml"], "bundle-patch-test")
+            self.assertNotIn("build", base["services"]["qwenpaw"])
+            self.assertIn("@sha256:4127130c", base["services"]["qwenpaw"]["image"])
+            self.assertEqual(source["services"]["qwenpaw"]["image"], "bot-combined/qwenpaw:2.2.1-local")
+            self.assertEqual(source["services"]["qwenpaw"]["pull_policy"], "never")
+            for key in ("volumes", "environment", "networks"):
+                self.assertEqual(base["services"]["qwenpaw"][key], source["services"]["qwenpaw"][key])
+            for name in ("astrbot", "napcat", "gateway"):
+                self.assertEqual(base["services"][name], source["services"][name])
 
     def test_fresh_and_addon_pass_actual_compose_schema(self):
         with tempfile.TemporaryDirectory() as folder:

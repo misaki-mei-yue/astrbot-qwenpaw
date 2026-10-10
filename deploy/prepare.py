@@ -160,6 +160,19 @@ def _prepare_locked(mode: str, root: Path, existing_dir: Path | None = None) -> 
     if mode == "fresh":
         private_dir(root / "state/astrbot")
     private_write(env_path, encoded_env, replace=True)
+    if mode == "fresh":
+        # AstrBot 4.25.1's OneBot v11 template (aiocqhttp) listens for
+        # NapCat's reverse WebSocket. AstrBot fills other configuration defaults
+        # and generates its own initial dashboard password on first startup.
+        # Never merge into or replace an existing configuration, even if empty.
+        private_write(
+            root / "state/astrbot/cmd_config.json",
+            json.dumps({"platform": [{
+                "id": "qq", "type": "aiocqhttp", "enable": True,
+                "ws_reverse_host": "0.0.0.0", "ws_reverse_port": 6199,
+                "ws_reverse_token": env["ONEBOT_TOKEN"],
+            }]}, ensure_ascii=False, indent=2) + "\n",
+        )
     # NapCat's official entrypoint copies bundled config defaults when napcat.json
     # is absent. Supply its documented logging settings first so that bootstrap
     # does not accidentally overwrite the generated OneBot default below.

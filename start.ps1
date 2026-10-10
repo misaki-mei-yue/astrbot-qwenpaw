@@ -2,6 +2,7 @@
 [CmdletBinding()]
 param(
     [switch]$NoBrowser,
+    [switch]$BuildQwenPaw,
     [ValidateRange(10, 3600)][int]$ReadyTimeoutSeconds = 600
 )
 
@@ -15,7 +16,8 @@ function ConvertTo-BundleArgument {
 }
 
 function Invoke-BundleCommand {
-    param([string]$File, [string[]]$Arguments, [int]$TimeoutSeconds = 60, [string]$Phase = '')
+    param([string]$File, [string[]]$Arguments, [int]$TimeoutSeconds = 60, [string]$Phase = '', [AllowNull()][object]$InputText = $null)
+    if ($null -ne $InputText -and $InputText -isnot [string]) { throw 'Invalid process input.' }
     $info = New-Object System.Diagnostics.ProcessStartInfo
     $info.FileName = $File
     $info.Arguments = (($Arguments | ForEach-Object { ConvertTo-BundleArgument $_ }) -join ' ')
@@ -23,15 +25,34 @@ function Invoke-BundleCommand {
     $info.CreateNoWindow = $true
     $info.RedirectStandardOutput = $true
     $info.RedirectStandardError = $true
+    $info.RedirectStandardInput = $null -ne $InputText
     $process = New-Object System.Diagnostics.Process
     $process.StartInfo = $info
     try {
         if (-not $process.Start()) { throw 'Unable to start the required program.' }
         $stdout = $process.StandardOutput.ReadToEndAsync()
         $stderr = $process.StandardError.ReadToEndAsync()
+        $inputTask = $null
+        $inputStream = $null
+        $inputClosed = $false
+        if ($info.RedirectStandardInput) {
+            # PowerShell 5.1/.NET Framework lacks StandardInputEncoding. Write UTF-8
+            # bytes directly, so system code pages cannot alter the Python source.
+            $inputBytes = [System.Text.Encoding]::UTF8.GetBytes($InputText)
+            $inputStream = $process.StandardInput.BaseStream
+            $inputTask = $inputStream.WriteAsync($inputBytes, 0, $inputBytes.Length)
+        }
         $timer = [System.Diagnostics.Stopwatch]::StartNew()
         $nextNotice = 20
         while (-not $process.WaitForExit(1000)) {
+            if ($inputTask -and $inputTask.IsCompleted -and -not $inputClosed) {
+                if ($inputTask.IsFaulted -or $inputTask.IsCanceled) {
+                    if (-not $process.HasExited) { $process.Kill() }
+                    throw 'Unable to pass the setup script to the container.'
+                }
+                $inputStream.Close()
+                $inputClosed = $true
+            }
             if ($timer.Elapsed.TotalSeconds -ge $TimeoutSeconds) {
                 $process.Kill()
                 $null = $process.WaitForExit(2000)
@@ -52,8 +73,8 @@ function Invoke-BundleCommand {
 }
 
 function Invoke-BundleChecked {
-    param([string]$File, [string[]]$Arguments, [string]$Phase, [int]$TimeoutSeconds = 60)
-    $result = Invoke-BundleCommand -File $File -Arguments $Arguments -TimeoutSeconds $TimeoutSeconds -Phase $Phase
+    param([string]$File, [string[]]$Arguments, [string]$Phase, [int]$TimeoutSeconds = 60, [AllowNull()][object]$InputText = $null)
+    $result = Invoke-BundleCommand -File $File -Arguments $Arguments -TimeoutSeconds $TimeoutSeconds -Phase $Phase -InputText $InputText
     if ($result.ExitCode -ne 0) {
         # Never echo native output: Compose and application errors can contain secrets.
         throw "$Phase failed (exit $($result.ExitCode)). Existing data was retained; services were not automatically stopped."
@@ -260,14 +281,42 @@ function Wait-BundleHealth {
     throw 'The bundle did not become ready. Containers and data were retained for diagnosis; run start again after checking Docker Desktop.'
 }
 
+function Wait-BundleQwenPaw {
+    param([int]$TimeoutSeconds = 600)
+    Write-Host 'Waiting for the QwenPaw default agent before setting up the bridge...'
+    $timer = [System.Diagnostics.Stopwatch]::StartNew()
+    while ($timer.Elapsed.TotalSeconds -lt $TimeoutSeconds) {
+        $health = Get-BundleHealth
+        if ($health -and $health.services) {
+            $service = $health.services.PSObject.Properties['qwenpaw']
+            if ($service -and $service.Value.ready -is [bool] -and $service.Value.ready -eq $true) { return }
+        }
+        Start-Sleep -Seconds 2
+    }
+    throw 'QwenPaw did not become ready for bridge setup. Containers and data were retained for diagnosis.'
+}
+
+function Get-BundleBootstrapScript {
+    param([string]$ProjectRoot)
+    $path = Join-Path $ProjectRoot 'deploy\bootstrap_qwenpaw.py'
+    Assert-BundleNoLinks $path
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+        throw 'The QwenPaw bridge setup script is missing. Extract the complete release again.'
+    }
+    if ((Get-Item -LiteralPath $path).Length -gt 1048576) { throw 'The QwenPaw bridge setup script is unexpectedly large.' }
+    $encoding = New-Object System.Text.UTF8Encoding($false, $true)
+    return [System.IO.File]::ReadAllText($path, $encoding)
+}
+
 function Open-BundlePage {
     Start-Process -FilePath 'http://localhost:18080/' | Out-Null
 }
 
 function Invoke-BundleStart {
-    param([string]$ProjectRoot, [switch]$NoBrowser, [int]$ReadyTimeoutSeconds = 600)
+    param([string]$ProjectRoot, [switch]$NoBrowser, [switch]$BuildQwenPaw, [int]$ReadyTimeoutSeconds = 600)
     $paths = Get-BundlePaths $ProjectRoot
     Assert-BundleRuntime $paths
+    $bootstrap = Get-BundleBootstrapScript $paths.Root
     $docker = Get-BundleDockerPath
     $context = Get-BundleLocalContext $docker
     $python = Find-BundlePython
@@ -277,10 +326,26 @@ function Invoke-BundleStart {
     $null = Invoke-BundleChecked $python.File ($python.Prefix + @($paths.Prepare, '--mode', 'fresh', '--root', $paths.Runtime)) 'Preparing bundle configuration'
     Assert-BundleRuntime $paths -RequirePrepared
     $compose = Get-BundleComposeArguments $paths $context
+    $buildServices = @('gateway')
+    if ($BuildQwenPaw) {
+        $sourceCompose = Join-Path $paths.Root 'deploy\compose.qwenpaw.source.yaml'
+        Assert-BundleNoLinks $sourceCompose
+        if (-not (Test-Path -LiteralPath $sourceCompose -PathType Leaf)) {
+            throw 'The optional QwenPaw source-build configuration is missing.'
+        }
+        $compose += @('-f', $sourceCompose)
+        $buildServices += 'qwenpaw'
+        Write-Host 'Optional QwenPaw source build selected; this can take much longer than pulling the official image.'
+    }
     $null = Invoke-BundleChecked $docker ($compose + @('config', '--quiet')) 'Validating bundle configuration'
-    Write-Host 'Preparing images. The first build may take a while and needs Internet access...'
-    $null = Invoke-BundleChecked $docker ($compose + @('build')) 'Building bundle images' 3600
+    Write-Host 'Pulling missing application images; existing fixed images are reused...'
+    $null = Invoke-BundleChecked $docker ($compose + @('pull', '--ignore-buildable', '--policy', 'missing')) 'Pulling bundle images' 3600
+    Write-Host 'Building the local gateway (and QwenPaw only if explicitly selected)...'
+    $null = Invoke-BundleChecked $docker ($compose + @('build') + $buildServices) 'Building bundle images' 3600
     $null = Invoke-BundleChecked $docker ($compose + @('up', '-d')) 'Starting bundle services' 3600
+    Wait-BundleQwenPaw $ReadyTimeoutSeconds
+    Write-Host 'Checking the native bridge channel; existing disabled settings are preserved...'
+    $null = Invoke-BundleChecked $docker ($compose + @('exec', '-T', 'qwenpaw', '/app/venv/bin/python', '-')) 'Setting up QwenPaw bridge' 240 -InputText $bootstrap
     Wait-BundleHealth $ReadyTimeoutSeconds
     Write-Host 'Ready: http://localhost:18080/'
     Write-Host 'First use: configure your model, log in to WeChat/QQ, and allow your user ID. Ready does not mean those accounts are already configured.'
@@ -290,7 +355,7 @@ function Invoke-BundleStart {
 if ($MyInvocation.InvocationName -ne '.') {
     $ErrorActionPreference = 'Stop'
     try {
-        Invoke-BundleStart -ProjectRoot $PSScriptRoot -NoBrowser:$NoBrowser -ReadyTimeoutSeconds $ReadyTimeoutSeconds
+        Invoke-BundleStart -ProjectRoot $PSScriptRoot -NoBrowser:$NoBrowser -BuildQwenPaw:$BuildQwenPaw -ReadyTimeoutSeconds $ReadyTimeoutSeconds
         exit 0
     }
     catch { Write-Host ('STOP: ' + $_.Exception.Message) -ForegroundColor Red; exit 1 }

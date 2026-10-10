@@ -52,10 +52,9 @@ services:
     networks:
     - bridge
   qwenpaw:
-    image: bot-combined/qwenpaw:2.2.1-local
-    build:
-      context: https://github.com/agentscope-ai/QwenPaw.git#cae5773707b26ab2fd00903f84b712387894b256
-      dockerfile: deploy/Dockerfile
+    # Official v2.2.1; registry provenance confirms the fixed source commit.
+    image: agentscope-registry.ap-southeast-1.cr.aliyuncs.com/agentscope/qwenpaw@sha256:4127130c41f415434aca5a9ea8eada99d3185d99e2bf181bd95c6e7fb959a3a7
+    pull_policy: missing
     init: true
     restart: unless-stopped
     environment:

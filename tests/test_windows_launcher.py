@@ -29,7 +29,9 @@ class WindowsLauncherTests(unittest.TestCase):
         for name in ("start.ps1", "stop.ps1"):
             shutil.copyfile(ROOT / name, self.package / name)
         (self.package / "deploy/compose.bundle.yaml").write_text("services: {}\n")
+        (self.package / "deploy/compose.qwenpaw.source.yaml").write_text("services: {}\n")
         (self.package / "deploy/prepare.py").write_text("# mocked process only\n")
+        (self.package / "deploy/bootstrap_qwenpaw.py").write_text("# bootstrap fixture only\n", encoding="utf-8", newline="")
 
     def prepared(self):
         runtime = self.package / "runtime"
@@ -47,14 +49,15 @@ class WindowsLauncherTests(unittest.TestCase):
 $script:calls = @(); $script:FailPhase = ''; $script:Endpoint = 'npipe:////./pipe/dockerDesktopLinuxEngine'
 $script:EngineState = 'linux'; $script:engineChecks = 0; $script:FailHealth = $false
 $script:Opened = $false; $script:Healthy = $false; $script:DesktopStarted = $false
+$script:QwenReady = $false; $script:FailQwenReady = $false
 function Get-BundleDockerPath { return 'fake-docker' }
 function Find-BundlePython { return [pscustomobject]@{File='fake-python';Prefix=@('-3')} }
 function Get-BundleDesktopPath { return 'installed-desktop-fixture' }
 function Start-BundleDesktop { param($Path); $script:DesktopStarted=$true }
 function Start-Sleep { param($Seconds) }
 function Invoke-BundleCommand {
-    param($File, [string[]]$Arguments, $TimeoutSeconds=60, $Phase='')
-    $script:calls += [pscustomobject]@{file=$File;args=@($Arguments);phase=$Phase;timeout=$TimeoutSeconds}
+    param($File, [string[]]$Arguments, $TimeoutSeconds=60, $Phase='', $InputText=$null)
+    $script:calls += [pscustomobject]@{file=$File;args=@($Arguments);phase=$Phase;timeout=$TimeoutSeconds;inputLength=([string]$InputText).Length;qwenReady=$script:QwenReady;allReady=$script:Healthy}
     if ($Phase -and $Phase -eq $script:FailPhase) {
         return [pscustomobject]@{ExitCode=2;Output='private-secret-from-native-output';Error='another-private-secret'}
     }
@@ -83,6 +86,11 @@ function Wait-BundleHealth {
     if ($script:FailHealth) { throw 'health not ready' }
     $script:Healthy=$true
 }
+function Wait-BundleQwenPaw {
+    param($TimeoutSeconds)
+    if ($script:FailQwenReady) { throw 'qwen not ready' }
+    $script:QwenReady=$true
+}
 function Open-BundlePage {
     if (-not $script:Healthy) { throw 'browser opened before health' }
     $script:Opened=$true
@@ -99,8 +107,8 @@ function Open-BundlePage {
         self.assertEqual(len(lines), 1, result.stdout + result.stderr)
         return json.loads(lines[0]), result.stdout + result.stderr
 
-    def start_body(self, setup=""):
-        return setup + "\n$errorText=''; try { Invoke-BundleStart -ProjectRoot " + ps_string(self.package) + r''' } catch { $errorText=$_.Exception.Message }
+    def start_body(self, setup="", arguments=""):
+        return setup + "\n$errorText=''; try { Invoke-BundleStart -ProjectRoot " + ps_string(self.package) + " " + arguments + r''' } catch { $errorText=$_.Exception.Message }
 [Console]::WriteLine('RESULT:' + (ConvertTo-Json @{error=$errorText;calls=@($script:calls);opened=$script:Opened;healthy=$script:Healthy;desktop=$script:DesktopStarted} -Depth 8 -Compress))
 '''
 
@@ -166,6 +174,17 @@ function Open-BundlePage {
         self.assertFalse(any("up" in call["args"] for call in result["calls"]))
         self.assertFalse(result["opened"])
 
+    def test_pull_failure_never_builds_or_starts_and_preserves_existing_data(self):
+        runtime = self.prepared()
+        before = {name: (runtime / name).read_bytes() for name in (".env", "saved-login.db")}
+        result, output = self.run_ps(self.start_body("$script:FailPhase='Pulling bundle images'"))
+        self.assertIn("Pulling bundle images failed", result["error"])
+        self.assertFalse(any("build" in call["args"] or "up" in call["args"] for call in result["calls"]))
+        self.assertFalse(result["opened"])
+        self.assertNotIn("private-secret-from-native-output", output)
+        for name, data in before.items():
+            self.assertEqual((runtime / name).read_bytes(), data)
+
     def test_failed_health_preserves_running_services_and_never_claims_ready(self):
         result, output = self.run_ps(self.start_body("$script:FailHealth=$true"))
         self.assertEqual(result["error"], "health not ready")
@@ -185,7 +204,7 @@ function Open-BundlePage {
         self.assertIn(str(self.package / "deploy/prepare.py"), prepare_call["args"])
         self.assertEqual(prepare_call["args"][-4:], ["--mode", "fresh", "--root", str(self.package / "runtime")])
         commands = [call for call in calls if "--project-name" in call["args"]]
-        self.assertEqual(len(commands), 3)
+        self.assertEqual(len(commands), 5)
         names = set()
         for call in commands:
             args = call["args"]
@@ -196,8 +215,62 @@ function Open-BundlePage {
         self.assertEqual(len(names), 1)
         self.assertRegex(names.pop(), r"^astrbot-qwenpaw-bundle-[0-9a-f]{10}$")
         self.assertEqual(commands[0]["args"][-2:], ["config", "--quiet"])
+        self.assertEqual(commands[1]["args"][-4:], ["pull", "--ignore-buildable", "--policy", "missing"])
         self.assertEqual(commands[1]["timeout"], 3600)
+        self.assertEqual(commands[2]["args"][-2:], ["build", "gateway"])
         self.assertEqual(commands[2]["timeout"], 3600)
+        self.assertEqual(commands[3]["args"][-2:], ["up", "-d"])
+        self.assertEqual(commands[3]["timeout"], 3600)
+        self.assertEqual(commands[4]["args"][-5:], ["exec", "-T", "qwenpaw", "/app/venv/bin/python", "-"])
+        self.assertEqual(commands[4]["timeout"], 240)
+        self.assertEqual(commands[4]["inputLength"], len("# bootstrap fixture only\n"))
+        self.assertTrue(commands[4]["qwenReady"])
+        self.assertFalse(commands[4]["allReady"])
+
+    def test_explicit_source_build_uses_overlay_and_builds_qwenpaw(self):
+        result, _ = self.run_ps(self.start_body(arguments="-BuildQwenPaw"))
+        self.assertEqual(result["error"], "")
+        commands = [call for call in result["calls"] if "--project-name" in call["args"]]
+        self.assertEqual(len(commands), 5)
+        for call in commands:
+            args = call["args"]
+            self.assertEqual(args.count("-f"), 2)
+            self.assertIn(str(self.package / "deploy/compose.qwenpaw.source.yaml"), args)
+        self.assertEqual(commands[2]["args"][-3:], ["build", "gateway", "qwenpaw"])
+
+    def test_missing_source_overlay_fails_before_pull_or_build(self):
+        (self.package / "deploy/compose.qwenpaw.source.yaml").unlink()
+        result, _ = self.run_ps(self.start_body(arguments="-BuildQwenPaw"))
+        self.assertIn("source-build configuration is missing", result["error"])
+        self.assertFalse(any("pull" in call["args"] or "build" in call["args"] or "up" in call["args"] for call in result["calls"]))
+        self.assertFalse(result["opened"])
+
+    def test_missing_bootstrap_script_stops_before_preparing_runtime(self):
+        (self.package / "deploy/bootstrap_qwenpaw.py").unlink()
+        result, _ = self.run_ps(self.start_body())
+        self.assertIn("bridge setup script is missing", result["error"])
+        self.assertEqual(result["calls"], [])
+        self.assertFalse((self.package / "runtime").exists())
+
+    def test_qwen_readiness_failure_never_runs_bootstrap_or_opens_browser(self):
+        result, output = self.run_ps(self.start_body("$script:FailQwenReady=$true"))
+        self.assertEqual(result["error"], "qwen not ready")
+        self.assertTrue(any("up" in call["args"] for call in result["calls"]))
+        self.assertFalse(any("exec" in call["args"] or "stop" in call["args"] for call in result["calls"]))
+        self.assertFalse(result["opened"])
+        self.assertNotIn("Ready: http", output)
+
+    def test_bootstrap_failure_keeps_services_data_and_native_secrets_private(self):
+        runtime = self.prepared()
+        before = {name: (runtime / name).read_bytes() for name in (".env", "saved-login.db")}
+        result, output = self.run_ps(self.start_body("$script:FailPhase='Setting up QwenPaw bridge'"))
+        self.assertIn("Setting up QwenPaw bridge failed", result["error"])
+        self.assertFalse(result["opened"])
+        self.assertFalse(any("stop" in call["args"] or "down" in call["args"] for call in result["calls"]))
+        self.assertNotIn("private-secret-from-native-output", output)
+        self.assertNotIn("another-private-secret", output)
+        for name, data in before.items():
+            self.assertEqual((runtime / name).read_bytes(), data)
 
     def test_stop_only_targets_current_package_and_preserves_files(self):
         runtime = self.prepared()
@@ -242,6 +315,22 @@ if ($result.ExitCode -ne 0) { throw 'argument fixture process failed' }
 '''
         result, _ = self.run_ps(body, mocks=False)
         self.assertEqual(result, values)
+
+    def test_native_stdin_is_utf8_exact_and_not_in_arguments(self):
+        payload = "# bridge setup\nprint('图片与文件')\n" + "x" * 100000
+        payload_file = self.package / "stdin fixture.txt"
+        payload_file.write_text(payload, encoding="utf-8", newline="")
+        arguments = ["-c", "import sys,hashlib,json; raw=sys.stdin.buffer.read(); print(json.dumps({'sha256':hashlib.sha256(raw).hexdigest(), 'args':sys.argv[1:]}))"]
+        literal = "@(" + ",".join(ps_string(value) for value in arguments) + ")"
+        body = "$payload=[IO.File]::ReadAllText(" + ps_string(payload_file) + ", [Text.Encoding]::UTF8);\n"
+        body += "$result=Invoke-BundleCommand -File " + ps_string(sys.executable) + " -Arguments " + literal + r''' -InputText $payload
+if ($result.ExitCode -ne 0) { throw 'stdin fixture process failed' }
+[Console]::WriteLine('RESULT:' + $result.Output.Trim())
+'''
+        result, _ = self.run_ps(body, mocks=False)
+        import hashlib
+        self.assertEqual(result["sha256"], hashlib.sha256(payload.encode("utf-8")).hexdigest())
+        self.assertEqual(result["args"], [])
 
     def test_scripts_parse_on_installed_powershell(self):
         body = ""

@@ -1,0 +1,279 @@
+{
+  "test_only": true,
+  "qwenpaw_version": "2.2.1",
+  "expected_source_commit": "cae5773707b26ab2fd00903f84b712387894b256",
+  "installed_framework_sha256": "3d8e02eafa0a12d03b2a5fdac551c0d09b1198166b31d299b32adc371f0fb60a",
+  "versions": {
+    "agentscope": "2.0.7.post1",
+    "reme-ai": "0.4.1.11",
+    "aiohttp": "3.14.3",
+    "fastapi": "0.141.1",
+    "playwright": "1.62.0"
+  },
+  "started_at": "2026-10-10T06:12:35.052843+00:00",
+  "network_boundary": "loopback only; controlled model and callback servers",
+  "limitations": [
+    "No real QQ/WeChat transport or paid model calls",
+    "Automatic memory extraction/dream and vector embedding quality are not tested"
+  ],
+  "source_verified": false,
+  "health": {
+    "status": "ok",
+    "agents_loaded": [
+      "default"
+    ],
+    "uptime_seconds": 8.81
+  },
+  "plugins": [
+    {
+      "id": "astrbot-bridge",
+      "name": "AstrBot Bridge",
+      "version": "0.2.0",
+      "description": "AstrBot 微信/QQ 主动通知和使用可信会话上下文的插件工具桥接。",
+      "author": "",
+      "enabled": true,
+      "loaded": true,
+      "plugin_type": "channel",
+      "frontend_entry": null
+    }
+  ],
+  "channel_health": {
+    "channel": "astrbot",
+    "status": "healthy",
+    "detail": "Outbound bridge configured; platform delivery is verified by AstrBot."
+  },
+  "bridge_tools": [
+    {
+      "name": "astrbot_list_tools",
+      "enabled": true,
+      "description": "列出当前 AstrBot 会话允许使用的插件工具。",
+      "async_execution": false,
+      "icon": "🔧",
+      "requires_config": false,
+      "config_fields": null,
+      "config_values": null
+    },
+    {
+      "name": "astrbot_call_tool",
+      "enabled": true,
+      "description": "调用当前 AstrBot 会话允许使用的插件工具。",
+      "async_execution": false,
+      "icon": "🔧",
+      "requires_config": false,
+      "config_fields": null,
+      "config_values": null
+    },
+    {
+      "name": "astrbot_media_workspace",
+      "enabled": true,
+      "description": "获取当前会话的共享附件工作区；将生成文件保存到outbound后再发送。",
+      "async_execution": false,
+      "icon": "🔧",
+      "requires_config": false,
+      "config_fields": null,
+      "config_values": null
+    },
+    {
+      "name": "astrbot_send_file",
+      "enabled": true,
+      "description": "发送当前会话outbound中的真实本地文件，不接受远程URL或其他用户文件。",
+      "async_execution": false,
+      "icon": "🔧",
+      "requires_config": false,
+      "config_fields": null,
+      "config_values": null
+    }
+  ],
+  "memory_daily_initial": [],
+  "memory_digest_initial": [],
+  "memory_runtime": {
+    "worker": {
+      "status": "idle",
+      "queue_pending": 0,
+      "tasks_running": 0
+    },
+    "auto_memory": {
+      "enabled": false,
+      "interval": 0
+    },
+    "tasks": [],
+    "recent": {
+      "last_error": null
+    },
+    "reindexing": false,
+    "embedding_reindex_required": false,
+    "embedding_reindex_undo_available": false
+  },
+  "active_initial": {
+    "active_llm": null,
+    "effective_max_input_length": null
+  },
+  "active_configured": {
+    "active_llm": {
+      "provider_id": "local-runtime-test",
+      "model": "local-runtime-test"
+    },
+    "effective_max_input_length": 131072
+  },
+  "chat_completed": 8,
+  "real_bridge_client": {
+    "RUNTIME_LIST_TOOLS": [
+      {
+        "type": "text",
+        "text": "RUNTIME_TOOL_OK"
+      }
+    ],
+    "RUNTIME_CALL_TOOL": [
+      {
+        "type": "text",
+        "text": "RUNTIME_TOOL_OK"
+      }
+    ]
+  },
+  "native_files": {
+    "write_event_count": 18,
+    "read_event_count": 18,
+    "read_back_matches": true
+  },
+  "memory_written": {
+    "written": true
+  },
+  "memory_search": {
+    "marker_retrieved": true,
+    "event_count": 18,
+    "backend": "ReMe BM25; no embedding configured"
+  },
+  "memory_daily_written": [
+    {
+      "filename": "runtime-validation.md",
+      "path": "<isolated-test-root>/working/workspaces/default/memory/runtime-validation.md",
+      "size": 62,
+      "created_time": "2026-10-10T06:13:33.835205+00:00",
+      "modified_time": "2026-10-10T06:13:33.835205+00:00"
+    }
+  ],
+  "cron_created": {
+    "id": "566eaafe-9b07-4534-ab88-0f529944f941",
+    "name": "Local runtime cron",
+    "enabled": true,
+    "schedule": {
+      "type": "cron",
+      "cron": "0 0 1 1 *",
+      "run_at": null,
+      "timezone": "UTC",
+      "repeat_every_days": null,
+      "repeat_end_type": null,
+      "repeat_until": null,
+      "repeat_count": null
+    },
+    "task_type": "agent",
+    "text": null,
+    "request": {
+      "input": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "RUNTIME_CRON"
+            }
+          ]
+        }
+      ],
+      "session_id": "ab_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "user_id": "runtime-test-owner"
+    },
+    "dispatch": {
+      "type": "channel",
+      "channel": "astrbot",
+      "target": {
+        "user_id": "runtime-test-owner",
+        "session_id": "ab_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "mode": "final",
+      "silent": false,
+      "meta": {}
+    },
+    "save_result_to_inbox": true,
+    "runtime": {
+      "max_concurrency": 1,
+      "timeout_seconds": 900,
+      "misfire_grace_seconds": 600,
+      "share_session": true,
+      "tool_safety": true
+    },
+    "meta": {}
+  },
+  "cron_history": [
+    {
+      "run_at": "2026-10-10T06:13:47.948507Z",
+      "status": "success",
+      "error": null,
+      "trigger": "manual"
+    }
+  ],
+  "cron_paused": {
+    "paused": true
+  },
+  "cron_resumed": {
+    "resumed": true
+  },
+  "tool_disabled": {
+    "name": "astrbot_call_tool",
+    "enabled": false,
+    "description": "调用当前 AstrBot 会话允许使用的插件工具。",
+    "async_execution": false,
+    "icon": "🔧",
+    "requires_config": false,
+    "config_fields": null,
+    "config_values": null
+  },
+  "health_after_restart": {
+    "status": "ok",
+    "agents_loaded": [
+      "default"
+    ],
+    "uptime_seconds": 8.9
+  },
+  "persistence": {
+    "memory_file": true,
+    "reme_search": true,
+    "cron_job": true,
+    "tool_disabled_setting": true,
+    "session_file": true
+  },
+  "passed": true,
+  "gateway_calls": [
+    {
+      "session_id": "ab_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "user_id": "runtime-test-owner",
+      "turn_id": "cccccccccccccccccccccccccccccccc"
+    },
+    {
+      "call_id": "0dcf0b56-6718-4c02-92dd-02858ab49295",
+      "session_id": "ab_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "user_id": "runtime-test-owner",
+      "turn_id": "cccccccccccccccccccccccccccccccc",
+      "tool_name": "echo",
+      "arguments": {
+        "text": "runtime"
+      }
+    }
+  ],
+  "deliveries": [
+    {
+      "delivery_id": "45f4adeb-5503-5f7b-a748-8262410ea415",
+      "session_id": "ab_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "user_id": "runtime-test-owner",
+      "content": [
+        {
+          "type": "text",
+          "text": "RUNTIME_CRON_OK"
+        }
+      ]
+    }
+  ],
+  "exact_test_approvals": [],
+  "model_calls": 16,
+  "finished_at": "2026-10-10T06:14:08.026294+00:00"
+}

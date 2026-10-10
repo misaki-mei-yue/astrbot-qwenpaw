@@ -7,11 +7,13 @@
 | 组件 | 固定版本 | 获取方式 |
 |---|---|---|
 | AstrBot | 4.25.1 | `soulter/astrbot:v4.25.1` |
-| QwenPaw | 2.2.1 | 官方 Git 提交 `cae5773707b26ab2fd00903f84b712387894b256` 的 `deploy/Dockerfile` 构建 |
+| QwenPaw | 2.2.1 | 本地组合包使用官方 ACR 固定摘要；服务器模式保留固定 Git 提交的源码构建 |
 | NapCat | 4.18.33 | `mlikiowa/napcat-docker:v4.18.33` |
 | 本地控制台代理 | Caddy 2.11.7 | `caddy:2.11.7-alpine`（[官方镜像清单](https://raw.githubusercontent.com/docker-library/official-images/master/library/caddy)） |
 
-QwenPaw 使用本地构建标签 `bot-combined/qwenpaw:2.2.1-local`；这不是声称存在一个上游 `v2.2.1` 镜像。官方 Dockerfile 安装 Chromium、Playwright 使用的系统浏览器、Xvfb、Xfce 和中文字体，保留完整浏览器/桌面运行依赖。固定应用提交不等于锁定所有系统包；验证后应记录本地镜像 ID/上游 RepoDigest，并保留构建产物用于复现。[官方源文件](https://github.com/agentscope-ai/QwenPaw/blob/cae5773707b26ab2fd00903f84b712387894b256/deploy/Dockerfile)。
+Windows 本地 `compose.bundle.yaml` 默认使用官方镜像 `agentscope-registry.ap-southeast-1.cr.aliyuncs.com/agentscope/qwenpaw@sha256:4127130c41f415434aca5a9ea8eada99d3185d99e2bf181bd95c6e7fb959a3a7`，清单和构建证明已核对到 Git 提交 `cae5773707b26ab2fd00903f84b712387894b256`。可选源码覆盖与启动选项见 [Windows 说明](windows.md#官方镜像与可选源码构建)。
+
+以下服务器 `compose.yaml` / `compose.addon.yaml` 仍从该固定提交构建，使用本地标签 `bot-combined/qwenpaw:2.2.1-local`。官方 Dockerfile 安装 Chromium、Playwright 使用的系统浏览器、Xvfb、Xfce 和中文字体，保留完整浏览器/桌面运行依赖。源码构建的固定应用提交不等于锁定所有系统包；验证后应记录本地镜像 ID/上游 RepoDigest，并保留构建产物用于复现。[官方源文件](https://github.com/agentscope-ai/QwenPaw/blob/cae5773707b26ab2fd00903f84b712387894b256/deploy/Dockerfile)。
 
 使用 Linux amd64/arm64、Docker Engine、Compose v2 或更新版本、Python 3 和足够磁盘空间。产品保留完整文件、记忆和浏览器能力；硬件容量、任务并发与容器限额按实际使用测试和配置。镜像构建会用到外网和额外磁盘空间，预留 8 GB 以上可用空间。新 `.env` 的 `*_MEMORY` 和 `*_SWAP` 是可修改的部署参数；`memswap_limit` 是 RAM 加 swap 的总量，必须不小于对应 RAM 限额。
 
@@ -89,7 +91,7 @@ docker compose --env-file /opt/bot-combined/.env -f deploy/compose.yaml build qw
 docker compose --env-file /opt/bot-combined/.env -f deploy/compose.yaml up -d
 ```
 
-也可将全新根目录设成 `/opt/bot`；如果已有 `data`、`compose.yaml` 或部署回执，脚本会停止并要求选 A 模式。新安装不会携带任何作者的微信登录态、QQ 账号、模型密钥、联系人或聊天记录，需要你在 AstrBot 中添加微信/QQ 和模型服务。
+也可将全新根目录设成 `/opt/bot`；如果已有 `data`、`compose.yaml` 或部署回执，脚本会停止并要求选 A 模式。新安装不会携带任何作者的微信登录态、QQ 账号、模型密钥、联系人或聊天记录，首次全新准备会预配 QQ 接收端，请先检查已有条目，避免重复添加。微信接入、QQ 扫码和模型服务仍需自行配置。
 
 ## 两端初次配置
 

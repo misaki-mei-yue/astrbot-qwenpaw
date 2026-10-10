@@ -4,7 +4,7 @@
 
 本项目是两个原项目之间的独立集成层。固定适配 **AstrBot 4.25.1 + QwenPaw 2.2.1**，QQ 通过 **NapCat 4.18.33**。不修改两边的核心源码。
 
-**本地组合启动包（0.4.0 开发版）：** Windows 解压后双击 `start.cmd`，一起启动三套程序，成功后只需打开 **http://localhost:18080/**。在同一个入口切换 AstrBot、QwenPaw 和 QQ 登录的原生页面；停止时双击 `stop.cmd`，配置和数据保留。需要已安装 Docker Desktop（Linux 容器）和 Python 3.10+，首次联网下载 / 构建镜像；不是预装账号或镜像的离线包。详见 [Windows 使用说明](docs/windows.md)。完整三容器、真实账号与模型仍待实机验收。
+**本地组合启动包（0.4.1 开发版）：** Windows 解压后双击 `start.cmd`，一起启动三套程序，成功后只需打开 **http://localhost:18080/**。在同一个入口切换 AstrBot、QwenPaw 和 QQ 登录的原生页面；停止时双击 `stop.cmd`，配置和数据保留。需要已安装 Docker Desktop（Linux 容器）和 Python 3.10+，首次联网拉取官方固定版本镜像，仅构建小型入口服务；QwenPaw 源码构建另有显式选项。不是预装账号或镜像的离线包。详见 [Windows 使用说明](docs/windows.md)。已在 Windows Docker Desktop 实际启动三套原生应用，并验证文件、记忆、任务和 Linux 浏览器；真实账号和模型仍需配置与验收。
 
 ```mermaid
 flowchart LR

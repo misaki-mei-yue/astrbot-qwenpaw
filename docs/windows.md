@@ -5,8 +5,8 @@
 ## 第一次使用
 
 1. 自行安装并打开 Docker Desktop，使用 **Linux 容器**；再安装 Python 3.10 或更新版本，安装时启用 Python launcher 或加入 PATH。脚本不会替你安装软件、购买服务器或导入已有账号。
-2. 把完整组合包解压到自己的普通文件夹，避免符号链接和目录联接。留出镜像、浏览器和数据所需的磁盘空间；首次构建需要联网，可能较久。
-3. 双击根目录的 **start.cmd**。它检查本机 Docker 和 Python，准备私密配置，校验组合配置，构建镜像并启动。Docker Desktop 尚未运行时，只会启动已安装的程序并等待，不修改全局执行策略。
+2. 把完整组合包解压到自己的普通文件夹，避免符号链接和目录联接。留出镜像、浏览器和数据所需的磁盘空间；首次下载需要联网。希望减少 C 盘占用时，将包放到 E 盘，并在首次拉取前确认 Docker Desktop 的 Linux 数据盘也在 E 盘：程序数据写入包目录的 `runtime`，镜像与构建缓存由 Docker 数据盘位置决定。
+3. 双击根目录的 **start.cmd**。它检查本机 Docker 和 Python，准备私密配置，校验组合配置，拉取缺少的应用镜像，再构建小型入口服务并启动。QwenPaw 默认直接使用已核对源码提交的官方固定镜像，无需在本机安装几百个系统包。等 QwenPaw 默认 Agent 就绪后，启动器通过官方接口检查桥接频道：首次空配置会启用，已有配置保留，包括你主动关闭的状态。脚本与密钥不会放入进程参数。Docker Desktop 尚未运行时，只会启动已安装的程序并等待，不修改全局执行策略。
 4. 网关和三个程序均可访问后，脚本才打开浏览器。首次仍需配置模型、扫码登录微信／QQ、设置允许使用的用户与工具；具体操作见[部署说明](deployment.md)和 [QQ 接入说明](qq.md)。就绪检查不代替模型请求或真实平台收发验收。
 
 也可以在包目录的 PowerShell 中运行：
@@ -17,6 +17,28 @@
 ```
 
 若当前 PowerShell 策略阻止直接运行，双击 `.cmd`；它只对这一次 PowerShell 进程使用执行策略参数。不会改变系统设置。自动化时可运行 `.\start.ps1 -NoBrowser`。
+
+## 第一次进入三个页面
+
+- **聊天与插件 / AstrBot**：用户名默认为 `astrbot`。4.25.1 使用随机初始密码；在 Docker Desktop 打开本目录对应项目的 AstrBot 日志，查找最新一次启动的 `Initial password:`。只在自己电脑查看，登录后亲自在原生页面设置新密码。
+- **记忆与任务 / QwenPaw**：本地模式默认没有额外账号登录。进入 Models 配置自己的模型，再选择 Default Agent 使用的模型。首次启动会自动准备 AstrBot 回传频道；已有关闭状态保持不变。
+- **QQ 登录 / NapCat**：用记事本打开包内 `runtime/state/napcat/config/webui.json`，将 `token` 字段复制到登录框，然后用手机 QQ 扫码。这个登录密码与 `runtime/.env` 中的 `ONEBOT_TOKEN` 不同。全新包已预配 QQ 的内部连接，已有配置不会覆盖，详情见 [QQ 说明](qq.md)。
+
+这些密码、令牌、二维码和日志只在本机查看，不要贴到聊天或上传仓库。微信在 AstrBot 原生机器人页面按其方式登录；微信和 QQ 登录后仍需在桥接插件中设置允许使用的用户。
+
+## 官方镜像与可选源码构建
+
+本地组合包默认使用官方阿里云 ACR 的 QwenPaw 2.2.1 镜像，固定摘要为 `sha256:4127130c41f415434aca5a9ea8eada99d3185d99e2bf181bd95c6e7fb959a3a7`。已匿名核对 ACR 和 Docker Hub 清单，两者摘要相同；amd64 镜像的 SLSA 构建证明中，`vcs:revision` 是项目适配的 `cae5773707b26ab2fd00903f84b712387894b256`。[官方发布](https://github.com/agentscope-ai/QwenPaw/releases/tag/v2.2.1)、[官方 Docker Hub 标签元数据](https://hub.docker.com/v2/repositories/agentscope/qwenpaw/tags/v2.2.1)、[本项目来源核对记录](qwenpaw-image-validation.json)。完整原生 Console、浏览器与桌面依赖保留，amd64 压缩层合计约 993 MB，实际下载速度取决于网络。
+
+启动器先运行 `pull --ignore-buildable --policy missing`，缺失应用镜像才拉取；默认只构建 `gateway`。[Docker 的拉取参数](https://docs.docker.com/reference/cli/docker/compose/pull/)。官方镜像不可达时会明确停止，不会自动改用未知版本或偷偷启动长时间源码构建。
+
+需要自己构建同一固定源码时，显式运行：
+
+```powershell
+.\start.cmd -BuildQwenPaw
+```
+
+此选项增加 `deploy/compose.qwenpaw.source.yaml` 覆盖，并构建固定提交的官方 Dockerfile；可能耗时较久、占用较多构建缓存。仍使用同一 `runtime` 和项目，数据挂载、端口与权限不变，`stop.cmd` 仍可停止它。以后继续使用源码镜像时每次加此选项；普通 `start.cmd` 会恢复官方固定镜像。服务器的现有安装 / add-on 配置未随本地组合包改动。
 
 ## 日常开启与停止
 
@@ -30,7 +52,7 @@
 
 打开 Docker Desktop 检查引擎和对应项目状态。环境问题修好后可重跑 `start.cmd`；请勿用删除 `runtime` 或执行 `down -v` 来解决启动问题。模型与 QQ／微信的首次配置仍由你完成。
 
-本轮启动流程由模拟进程测试验证失败边界、项目隔离、参数传递、数据保留和就绪判断；尚不能据此声称整套 Windows 镜像已经构建运行、真实账号已经登录或收发成功。
+Windows Docker Desktop 已实际启动三套原生应用和统一入口；本机回归还验证了文件、记忆、任务、Linux Chromium 和配置保留。真实账号、模型与平台收发仍待配置，具体范围见[验证记录](validation.md)。
 
 ## 一个地址的实现与边界
 
