@@ -323,14 +323,29 @@ if ($result.ExitCode -ne 0) { throw 'argument fixture process failed' }
         arguments = ["-c", "import sys,hashlib,json; raw=sys.stdin.buffer.read(); print(json.dumps({'sha256':hashlib.sha256(raw).hexdigest(), 'args':sys.argv[1:]}))"]
         literal = "@(" + ",".join(ps_string(value) for value in arguments) + ")"
         body = "$payload=[IO.File]::ReadAllText(" + ps_string(payload_file) + ", [Text.Encoding]::UTF8);\n"
+        body += "$initialCodePage=[Console]::InputEncoding.CodePage; $initialPreamble=[BitConverter]::ToString([Console]::InputEncoding.GetPreamble());\n"
         body += "$result=Invoke-BundleCommand -File " + ps_string(sys.executable) + " -Arguments " + literal + r''' -InputText $payload
 if ($result.ExitCode -ne 0) { throw 'stdin fixture process failed' }
+if ([Console]::InputEncoding.CodePage -ne $initialCodePage -or [BitConverter]::ToString([Console]::InputEncoding.GetPreamble()) -ne $initialPreamble) { throw 'console input encoding was not restored' }
 [Console]::WriteLine('RESULT:' + $result.Output.Trim())
 '''
-        result, _ = self.run_ps(body, mocks=False)
         import hashlib
-        self.assertEqual(result["sha256"], hashlib.sha256(payload.encode("utf-8")).hexdigest())
-        self.assertEqual(result["args"], [])
+        for encoding in ("default", "utf8-with-bom"):
+            with self.subTest(console_input_encoding=encoding):
+                invocation = body
+                if encoding == "utf8-with-bom":
+                    # Windows CI may use a UTF-8 console encoding whose StreamWriter
+                    # emits its preamble before any direct BaseStream write.
+                    invocation = r'''
+$previousEncoding=[Console]::InputEncoding
+[Console]::InputEncoding=(New-Object Text.UTF8Encoding($true))
+try {
+''' + body + r'''
+} finally { [Console]::InputEncoding=$previousEncoding }
+'''
+                result, _ = self.run_ps(invocation, mocks=False)
+                self.assertEqual(result["sha256"], hashlib.sha256(payload.encode("utf-8")).hexdigest())
+                self.assertEqual(result["args"], [])
 
     def test_scripts_parse_on_installed_powershell(self):
         body = ""

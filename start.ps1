@@ -29,7 +29,25 @@ function Invoke-BundleCommand {
     $process = New-Object System.Diagnostics.Process
     $process.StartInfo = $info
     try {
-        if (-not $process.Start()) { throw 'Unable to start the required program.' }
+        $previousInputEncoding = $null
+        try {
+            if ($info.RedirectStandardInput) {
+                $noBomUtf8 = New-Object System.Text.UTF8Encoding($false)
+                if ($info.PSObject.Properties['StandardInputEncoding']) {
+                    $info.StandardInputEncoding = $noBomUtf8
+                }
+                else {
+                    # .NET Framework creates an AutoFlush stdin writer during Start;
+                    # its console encoding must not emit a BOM before our bytes.
+                    $previousInputEncoding = [Console]::InputEncoding
+                    [Console]::InputEncoding = $noBomUtf8
+                }
+            }
+            if (-not $process.Start()) { throw 'Unable to start the required program.' }
+        }
+        finally {
+            if ($null -ne $previousInputEncoding) { [Console]::InputEncoding = $previousInputEncoding }
+        }
         $stdout = $process.StandardOutput.ReadToEndAsync()
         $stderr = $process.StandardError.ReadToEndAsync()
         $inputTask = $null
