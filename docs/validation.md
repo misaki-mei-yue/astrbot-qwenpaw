@@ -1,6 +1,19 @@
 # 验证记录
 
-日期：2026-10-09。当前版本：0.3.1，复用两端原生后台。
+日期：2026-10-10。当前版本：0.4.0 开发版，Windows 组合启动包与原生后台统一入口。
+
+## 0.4.0 本地组合包
+
+- Windows Python 3.10.2 完整回归：177 项，172 通过，5 项因 Windows 符号链接权限或 POSIX FIFO 条件跳过。包含新增 12 项网关检查、15 项 Windows 启动器检查和 1 项测试模块隔离回归。
+- 12 项网关检查使用真实 loopback HTTP / WebSocket，覆盖三套来源路由、请求与登录头隔离、Cookie 不跨用户共用、压缩资源、上传、流式响应、WebSocket 文本 / 二进制 / 子协议、跳转令牌保护、Host / Origin 拒绝及就绪判定。
+- 15 项启动器检查实际调用 PowerShell，由受控替身模拟 Docker / Python / 浏览器；验证参数与路径、首次 / 重复启动、故障即停、数据保留、项目范围和就绪判断，不代表容器已构建启动。
+- 真实 Chromium 访问实际网关，验证单个入口切换、不同来源的登录存储、表单内容保留、POST、iframe CSP、录音权限声明、下载、独立窗口、手机宽度与键盘操作。三套上游页面均明确标记为测试替身；没有扫码、使用真实原生后台或录音。
+- Docker Compose CLI 已实际解析本地组合配置；只向宿主 loopback 发布一个端口，没有固定容器 / 网络名称。Python 脚本语法检查通过。
+- GitHub Actions 增加 Windows 启动器与 Linux Chromium 入口检查，保留 Linux Python 3.10 / 3.12 回归；以对应提交的 [Actions 结果](https://github.com/misaki-mei-yue/astrbot-qwenpaw/actions) 为准。
+
+本机 Docker Desktop 在创建运行端点时自行退出，引擎未就绪；因此本轮没有构建或启动完整的三套原生容器。没有删除 Docker 数据、镜像或用户配置，也没有改动服务器。组合包是首次联网获取 / 构建镜像的启动包，不是包含镜像和已登录账号的离线包。
+
+复现：`python -m unittest discover -s tests -v`；浏览器检查为 `node scripts/check_bundle_ui.cjs`，需要 Playwright / Chromium 与开发依赖。详情见 [Windows 使用说明](windows.md)。
 
 ## 0.3.1 本地回归
 

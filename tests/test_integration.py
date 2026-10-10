@@ -7,6 +7,7 @@ server, platform login or official runtime is started.
 
 import asyncio
 import base64
+from contextlib import ExitStack
 import importlib
 import json
 import os
@@ -24,6 +25,7 @@ from aiohttp import web
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_astrbot_adapter as astrbot_fixture
 from test_qwenpaw_adapter import RuntimeStub
+from module_stubs import module_overrides
 
 from astrbot_plugin_qwenpaw_bridge.bridge_core import BridgeStore, QwenPawClient
 from qwenpaw_plugin_astrbot_bridge.bridge_client import BridgeClient, BridgeError, BridgeSettings
@@ -80,8 +82,8 @@ class HttpIntegrationTests(unittest.IsolatedAsyncioTestCase):
             "astrbot.core.astr_agent_hooks": astrbot_fixture.module("astrbot.core.astr_agent_hooks", MAIN_AGENT_HOOKS=self.hooks),
             "astrbot.core.astr_agent_tool_exec": astrbot_fixture.module("astrbot.core.astr_agent_tool_exec", FunctionToolExecutor=Executor),
         }
-        self.modules_patch = patch.dict(sys.modules, modules)
-        self.modules_patch.start()
+        self.modules_patch = ExitStack()
+        self.modules_patch.enter_context(module_overrides(modules))
         self.env_patch = patch.dict(os.environ, {}, clear=True)
         self.env_patch.start()
         self.bridge = astrbot_fixture.adapter.QwenPawBridge(self.context, {
@@ -127,7 +129,7 @@ class HttpIntegrationTests(unittest.IsolatedAsyncioTestCase):
         await self.gateway_runner.cleanup()
         self.bridge._store.close()
         self.env_patch.stop()
-        self.modules_patch.stop()
+        self.modules_patch.close()
         self.temp.cleanup()
 
     @staticmethod

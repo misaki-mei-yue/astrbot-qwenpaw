@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>AstrBot × QwenPaw</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <aside class="rail">
+    <div class="brand"><span class="brand-symbol" aria-hidden="true">◈</span><div>AstrBot <span>× QwenPaw</span></div></div>
+    <nav aria-label="管理页面" role="tablist" aria-orientation="vertical">
+      <button role="tab" id="tab-astrbot" aria-controls="panel-astrbot" aria-selected="true" data-app="astrbot"><span class="label">聊天与插件</span><span class="product">AstrBot</span><span class="dot" aria-hidden="true"></span></button>
+      <button role="tab" id="tab-qwenpaw" aria-controls="panel-qwenpaw" aria-selected="false" tabindex="-1" data-app="qwenpaw"><span class="label">记忆与任务</span><span class="product">QwenPaw</span><span class="dot" aria-hidden="true"></span></button>
+      <button role="tab" id="tab-napcat" aria-controls="panel-napcat" aria-selected="false" tabindex="-1" data-app="napcat"><span class="label">QQ 登录</span><span class="product">NapCat</span><span class="dot" aria-hidden="true"></span></button>
+    </nav>
+    <div class="rail-footer"><button id="help-toggle" aria-expanded="false" aria-controls="help">初次使用</button><span>一个入口，三套原生页面</span></div>
+  </aside>
+  <main>
+    <header><div><h1 id="page-title">聊天与插件</h1><p id="status" role="status">正在连接本地服务…</p></div><div class="page-actions"><a id="open-native" target="_blank" rel="noopener noreferrer">独立打开</a><button id="refresh">重新加载当前页面</button></div></header>
+    <section id="help" hidden aria-label="初次使用步骤">
+      <p><strong>先配置，再开始聊天。</strong> 页面就绪只代表程序已启动，模型和账号还需要你设置。</p>
+      <ol><li>在「记忆与任务」中配置模型，并启用 astrbot 回传频道。</li><li>在「聊天与插件」中添加微信；QQ 在「QQ 登录」中扫码，再连接 AstrBot。</li><li>在微信或 QQ 发送 <code>/paw whoami</code>，把自己的 ID 填入桥接插件的允许用户列表。</li></ol>
+      <p>三个页面保留各自登录与设置。切换标签不会主动重新加载页面。</p>
+    </section>
+    <div id="waiting"><div class="waiting-mark" aria-hidden="true">◈</div><h2>正在准备原生页面</h2><p>首次启动需要一些时间。就绪后会自动显示。</p><p id="waiting-detail">正在检查连接。</p><button id="check-again">再次检查</button></div>
+    <section class="native" role="tabpanel" id="panel-astrbot" aria-labelledby="tab-astrbot" hidden><iframe title="AstrBot 原生后台" referrerpolicy="same-origin" allow="microphone; clipboard-read; clipboard-write"></iframe></section>
+    <section class="native" role="tabpanel" id="panel-qwenpaw" aria-labelledby="tab-qwenpaw" hidden><iframe title="QwenPaw 原生后台" referrerpolicy="same-origin" allow="microphone; clipboard-read; clipboard-write"></iframe></section>
+    <section class="native" role="tabpanel" id="panel-napcat" aria-labelledby="tab-napcat" hidden><iframe title="NapCat QQ 登录" referrerpolicy="same-origin" allow="publickey-credentials-get; publickey-credentials-create; clipboard-read; clipboard-write"></iframe></section>
+  </main>
+</body>
+</html>

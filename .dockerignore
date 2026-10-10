@@ -1,0 +1,5 @@
+*
+!bundle_gateway/
+!bundle_gateway/**
+bundle_gateway/**/__pycache__/
+bundle_gateway/**/*.pyc

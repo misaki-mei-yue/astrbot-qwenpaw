@@ -1,6 +1,7 @@
 """Protocol tests use lightweight API stubs, not an installed QwenPaw runtime."""
 
 import asyncio
+from contextlib import ExitStack
 import importlib
 import json
 import os
@@ -16,6 +17,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 from urllib.error import HTTPError, URLError
 
+from module_stubs import module_overrides
 from qwenpaw_plugin_astrbot_bridge.bridge_client import BridgeClient, BridgeError, BridgeSettings
 from qwenpaw_plugin_astrbot_bridge.turn_context import clear_turn_id, get_turn_id, set_turn_id
 from qwenpaw_plugin_astrbot_bridge.media import media_descriptor, media_workspace
@@ -67,8 +69,8 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.media_root = Path(self.temp.name)
         self.runtime.profile.channels.astrbot.files_dir = str(self.media_root)
-        self.modules_patch = patch.dict(sys.modules, self.runtime.modules)
-        self.modules_patch.start()
+        self.modules_patch = ExitStack()
+        self.modules_patch.enter_context(module_overrides(self.runtime.modules))
         self.env_patch = patch.dict(os.environ, {}, clear=True)
         self.env_patch.start()
         self.tools = importlib.import_module("qwenpaw_plugin_astrbot_bridge.tools")
@@ -83,7 +85,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
 
     def tearDown(self):
         clear_turn_id()
-        self.modules_patch.stop()
+        self.modules_patch.close()
         self.env_patch.stop()
         self.temp.cleanup()
 

@@ -1,5 +1,15 @@
 # 桥接接口
 
+## 本机组合入口
+
+`deploy/compose.bundle.yaml` 将三套原程序与一个轻量网关作为同一 Compose 项目启动。只发布 `127.0.0.1:18080`；用户从 `http://localhost:18080/` 进入，标签页承载原生后台，不新增记忆、任务或插件管理接口。后台分别使用 `astrbot.localhost`、`qwenpaw.localhost`、`napcat.localhost` 的同一端口，以保留原 API / 资源路径及独立的浏览器登录存储。入口不提供统一登录。
+
+网关代理 HTTP、上传下载、SSE 与 WebSocket。内部 QwenPaw runtime token 仅在网关服务端注入；客户端提供的 runtime token、Hub 可信头与转发头先被移除。仅接收指定的本机 Host 和同源 API 调用，不跟随携带内部令牌的 HTTP / WebSocket 跳转。各用户的上游 Cookie 不在网关集中保存。为了嵌入原生页面，只调整响应的 frame-ancestors / X-Frame-Options，保留其余 CSP 限制；录音与通行密钥仍需原生浏览器授权。
+
+入口对三套页面及 QwenPaw 默认 Agent 做就绪检查。它不验证模型、平台登录或插件工作状态；首次配置与使用边界见 [Windows 说明](windows.md)。服务器模式仍使用原部署配置，此网关只用于本机。
+
+## 内部桥接接口
+
 AstrBot 适配器在内网监听 `9186`；所有端点包含 `Authorization: Bearer <BRIDGE_TOKEN>`。没有宿主公网端口映射。
 
 | 端点 | 请求 | 用途 |

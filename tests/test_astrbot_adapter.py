@@ -11,6 +11,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
+from module_stubs import module_overrides
 from astrbot_plugin_qwenpaw_bridge.bridge_core import BridgeStore
 
 
@@ -80,7 +81,7 @@ ASTRBOT_MODULES = {
     "astrbot.api.message_components": module("astrbot.api.message_components", Plain=Plain, Image=Image, Record=Record, Video=Video, File=File),
     "astrbot.api.star": module("astrbot.api.star", Context=object, Star=Star),
 }
-with patch.dict(sys.modules, ASTRBOT_MODULES):
+with module_overrides(ASTRBOT_MODULES):
     adapter = importlib.import_module("astrbot_plugin_qwenpaw_bridge.main")
 
 
@@ -326,7 +327,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
             "astrbot.core.star.session_plugin_manager": module("session_plugin_manager", SessionPluginManager=session_manager),
             "astrbot.core.star.star": module("star", star_map=plugins),
         }
-        with patch.dict(sys.modules, injected):
+        with module_overrides(injected):
             selected = await self.bridge._available_tools(event)
         self.assertEqual(set(selected), {"lookup"})
 
@@ -349,7 +350,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
             "astrbot.core.astr_agent_tool_exec": module("astr_agent_tool_exec", FunctionToolExecutor=Executor),
         }
         original_send = event.send
-        with patch.dict(sys.modules, injected):
+        with module_overrides(injected):
             result = await self.bridge._execute_tool(turn, Tool(), {"query": "safe"})
         hooks.on_tool_start.assert_awaited_once()
         hooks.on_tool_end.assert_awaited_once()
@@ -376,7 +377,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
             "astrbot.core.astr_agent_hooks": module("astr_agent_hooks", MAIN_AGENT_HOOKS=hooks),
             "astrbot.core.astr_agent_tool_exec": module("astr_agent_tool_exec", FunctionToolExecutor=Executor),
         }
-        with patch.dict(sys.modules, injected):
+        with module_overrides(injected):
             result = await self.bridge._execute_tool(turn, Tool(), {"query": "safe"})
         self.assertTrue(result["isError"])
         self.assertNotIn("private hook secret", str(result))
