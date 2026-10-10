@@ -1,5 +1,6 @@
 import asyncio
 import json
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -55,6 +56,53 @@ class RoutesTest(unittest.TestCase):
         self.store.fail("tool", "call-1")
         self.assertFalse(self.store.claim("tool", "call-1"))
         self.assertTrue(self.store.claim("delivery", "call-1"))
+
+    def test_personal_routes_persist_while_new_chat_keeps_memory_identity(self):
+        first = self.store.personal_session("wx:FriendMessage:123", "123", "weixin_oc", "wx", True)
+        self.store.close()
+        self.store = BridgeStore(self.path)
+        self.assertEqual(first, self.store.personal_session("wx:FriendMessage:123", "123", "weixin_oc", "wx", True))
+        new = self.store.personal_session("wx:FriendMessage:123", "123", "weixin_oc", "wx", True, new_session=True)
+        self.assertEqual(first["agent_id"], new["agent_id"])
+        self.assertNotEqual(first["session_id"], new["session_id"])
+        self.assertIsNone(self.store.get_session(first["session_id"]))
+        self.assertEqual(self.store.db.execute("SELECT COUNT(*) FROM retired_routes").fetchone()[0], 1)
+
+    def test_same_numbers_across_platforms_and_groups_are_separate(self):
+        sources = [("wx:FriendMessage:123", "123", "weixin_oc", "wx", True),
+                   ("qq:FriendMessage:123", "123", "aiocqhttp", "qq", True),
+                   ("wx:GroupMessage:g", "123", "weixin_oc", "wx", False),
+                   ("wx:GroupMessage:g", "456", "weixin_oc", "wx", False)]
+        routes = [self.store.personal_session(*args) for args in sources]
+        self.assertEqual(len({r["agent_id"] for r in routes}), 4)
+        self.assertEqual(len({r["session_id"] for r in routes}), 4)
+
+    def test_legacy_database_routes_are_not_automatically_admitted_to_personal_memory(self):
+        self.store.close()
+        legacy = Path(self.directory.name) / "legacy.db"
+        with sqlite3.connect(legacy) as db:
+            db.execute("CREATE TABLE routes(session_id TEXT PRIMARY KEY,origin TEXT NOT NULL,user_id TEXT NOT NULL,platform TEXT NOT NULL,UNIQUE(origin,user_id))")
+            db.execute("INSERT INTO routes VALUES ('ab_old','wx:FriendMessage:123','123','weixin_oc')")
+        db.close()
+        self.store = BridgeStore(legacy)
+        self.assertEqual(self.store.get_session("ab_old")["active"], 0)
+        personal = self.store.personal_session("wx:FriendMessage:123", "123", "weixin_oc", "wx", True)
+        self.assertEqual(personal["active"], 1)
+        self.assertTrue(personal["agent_id"].startswith("abp_"))
+        self.assertIsNone(self.store.get_session("ab_old"))
+        archived = json.loads(self.store.db.execute("SELECT route_json FROM retired_routes WHERE session_id='ab_old'").fetchone()[0])
+        self.assertEqual(archived["origin"], "wx:FriendMessage:123")
+
+    def test_link_retires_old_private_routes_immediately_but_preserves_group_recipient(self):
+        private = self.store.personal_session("qq:FriendMessage:123", "123", "aiocqhttp", "qq", True)
+        group = self.store.personal_session("qq:GroupMessage:g", "123", "aiocqhttp", "qq", False)
+        code = self.store.identities.create_link("weixin_oc", "wx", "owner", "wx:FriendMessage:owner", True)
+        linked = self.store.redeem_link("aiocqhttp", "qq", "123", "qq:FriendMessage:123", True, code)
+        self.assertIsNone(self.store.get_session(private["session_id"]))
+        after = self.store.personal_session("qq:GroupMessage:g", "123", "aiocqhttp", "qq", False)
+        self.assertEqual(group["session_id"], after["session_id"])
+        self.assertEqual(group["agent_id"], after["agent_id"])
+        self.assertEqual(linked["person_id"], after["person_id"])
 
 
 class CollectorTest(unittest.TestCase):

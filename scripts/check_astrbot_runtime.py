@@ -158,7 +158,7 @@ async def exercise(source: Path, project: Path, run_root: Path) -> dict:
         qwen_inputs.append(body)
         if request.headers.get("X-QwenPaw-Runtime-Token") != runtime_token:
             return web.json_response({"error": "unauthorized"}, status=401)
-        payload = {"session_id": body["session_id"], "user_id": body["user_id"],
+        payload = {"session_id": body["session_id"], "user_id": body["user_id"], "agent_id": request.match_info["agent_id"],
                    "turn_id": body["request_context"]["astrbot_bridge_turn_id"]}
         try:
             async with ClientSession(headers={"Authorization": "Bearer " + token}) as client:
@@ -186,8 +186,40 @@ async def exercise(source: Path, project: Path, run_root: Path) -> dict:
             qwen_errors.append(type(exc).__name__ + ": " + str(exc))
             return web.json_response({"error": "test_contract_failed"}, status=500)
 
+    # QwenPaw HTTP remains an explicit fixture here. Its real workspace API is
+    # exercised separately by check_personal_runtime.py in an isolated image.
+    agents = {"default": {"id": "default", "workspace_dir": "/isolated-workspaces/default"}}
+    notes = {}
+
+    async def agent_api(request):
+        aid = request.match_info.get("agent_id")
+        if request.method == "POST":
+            value = await request.json()
+            aid = value["id"]
+            agents[aid] = {**value, "workspace_dir": "/isolated-workspaces/" + aid}
+            return web.json_response(agents[aid], status=201)
+        if request.method == "PUT":
+            agents[aid] = await request.json()
+        return web.json_response(agents[aid]) if aid in agents else web.json_response({}, status=404)
+
+    async def workspace_api(request):
+        key = (request.headers.get("X-Agent-Id"), request.path)
+        if request.method == "PUT":
+            notes[key] = (await request.json())["content"]
+            return web.json_response({"written": True})
+        return web.json_response({"content": notes[key]}) if key in notes else web.json_response({}, status=404)
+
     app = web.Application()
-    app.router.add_post("/api/agents/default/console/chat", fake_chat)
+    app.router.add_post("/api/agents/{agent_id}/console/chat", fake_chat)
+    app.router.add_post("/api/agents", agent_api)
+    app.router.add_get("/api/agents/{agent_id}", agent_api)
+    app.router.add_put("/api/agents/{agent_id}", agent_api)
+    app.router.add_get("/api/skills", lambda request: web.json_response([]))
+    app.router.add_get("/api/models/active", lambda request: web.json_response({"active_llm": {"provider_id": "loopback-fixture", "model": "no-real-model"}}))
+    app.router.add_put("/api/workspace/files/{name}", workspace_api)
+    app.router.add_put("/api/workspace/memory/{name}", workspace_api)
+    app.router.add_get("/api/workspace/memory/{name}", workspace_api)
+    app.router.add_post("/api/agents/{agent_id}/memory/reindex", lambda request: web.json_response({"status": "completed"}))
     app.router.add_get("/api/approval/list", lambda request: web.json_response([]))
 
     runner = web.AppRunner(app, access_log=None)
@@ -255,6 +287,11 @@ async def exercise(source: Path, project: Path, run_root: Path) -> dict:
         await scheduler.execute(whoami)
         assert "runtime-test-owner" in text_of(whoami), text_of(whoami)
         checks.append("genuine_paw_command_registration")
+        remember = ProbeEvent("/paw remember I prefer jasmine tea", "runtime-remember")
+        await scheduler.execute(remember)
+        assert "已保存记忆" in text_of(remember), text_of(remember)
+        assert any("I prefer jasmine tea" in value for value in notes.values()), notes
+        checks.append("genuine_memory_command_keeps_full_text")
         event = ProbeEvent("hello-runtime", "runtime-chat")
         await scheduler.execute(event)
         assert not qwen_errors, qwen_errors
@@ -272,7 +309,7 @@ async def exercise(source: Path, project: Path, run_root: Path) -> dict:
         checks.append("nonowner_denied")
         route = next(bridge._store.get_session(body["session_id"]) for body in qwen_inputs)
         async with ClientSession(headers={"Authorization": "Bearer " + token}) as client:
-            payload = {"delivery_id": "runtime-delivery", "session_id": route["session_id"], "user_id": route["user_id"], "content": [{"type": "text", "text": "proactive-runtime"}]}
+            payload = {"delivery_id": "runtime-delivery", "session_id": route["session_id"], "user_id": route["user_id"], "agent_id": route["agent_id"], "content": [{"type": "text", "text": "proactive-runtime"}]}
             async with client.post("http://127.0.0.1:9186/v1/deliver", json=payload) as response:
                 assert response.status == 200 and (await response.json())["accepted"]
             async with client.post("http://127.0.0.1:9186/v1/deliver", json=payload) as response:

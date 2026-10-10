@@ -20,10 +20,31 @@ def configure_tools(config: dict[str, Any] | None) -> None:
     _plugin_config = dict(config or {})
 
 
+def authorized_agent_id(agent_id: Any) -> str:
+    """Validate an identity already obtained from the native runtime.
+
+    This helper does not authenticate model arguments or channel metadata.
+    The AstrBot gateway separately binds the returned Agent to its route.
+    """
+    expected = os.environ.get("QWENPAW_AGENT_ID", _plugin_config.get("agent_id", "default"))
+    if not isinstance(agent_id, str) or not agent_id:
+        raise BridgeError("This turn has no authenticated QwenPaw Agent identity.")
+    if agent_id != expected and not re.fullmatch(r"ab[pg]_[0-9a-f]{32}", agent_id):
+        raise BridgeError("This QwenPaw agent is not authorized for the AstrBot bridge.")
+    return agent_id
+
+
+def trusted_agent_id() -> str:
+    # get_current_agent_id falls back to the configured active Agent when its
+    # ContextVar is absent. The official peek API deliberately does not.
+    from qwenpaw.app.agent_context import peek_current_agent_id
+
+    return authorized_agent_id(peek_current_agent_id())
+
+
 def trusted_route() -> tuple[str, str]:
     from qwenpaw.app.agent_context import (
         get_current_channel,
-        get_current_agent_id,
         get_current_root_session_id,
         get_current_session_id,
         get_current_user_id,
@@ -32,9 +53,7 @@ def trusted_route() -> tuple[str, str]:
     # No tool argument can supply a session/user/channel or select another user's route.
     if get_current_channel() != "astrbot":
         raise BridgeError("AstrBot tools are available only within an AstrBot conversation.")
-    expected_agent_id = os.environ.get("QWENPAW_AGENT_ID", _plugin_config.get("agent_id", "default"))
-    if get_current_agent_id() != expected_agent_id:
-        raise BridgeError("This QwenPaw agent is not authorized for the AstrBot bridge.")
+    trusted_agent_id()
     session_id = get_current_root_session_id() or get_current_session_id()
     user_id = get_current_user_id()
     if not session_id or not user_id:
@@ -47,10 +66,9 @@ def trusted_route() -> tuple[str, str]:
 
 
 def tool_settings() -> BridgeSettings:
-    from qwenpaw.app.agent_context import get_current_agent_id
     from qwenpaw.config.config import load_agent_config
 
-    agent_config = load_agent_config(get_current_agent_id())
+    agent_config = load_agent_config(trusted_agent_id())
     channel_config = config_value(agent_config.channels, "astrbot", {})
     return BridgeSettings.from_config(channel_config, _plugin_config)
 
@@ -64,7 +82,8 @@ async def astrbot_list_tools() -> dict[str, Any]:
     session_id, user_id = trusted_route()
     turn_id = get_turn_id()
     return await BridgeClient(tool_settings()).post(
-        "/v1/tools/list", {"session_id": session_id, "user_id": user_id, "turn_id": turn_id}
+        "/v1/tools/list", {"session_id": session_id, "user_id": user_id, "turn_id": turn_id,
+                           "agent_id": trusted_agent_id()}
     )
 
 
@@ -88,6 +107,7 @@ async def astrbot_call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[s
             "session_id": session_id,
             "user_id": user_id,
             "turn_id": turn_id,
+            "agent_id": trusted_agent_id(),
             "tool_name": tool_name,
             "arguments": arguments,
         },
@@ -115,13 +135,14 @@ async def astrbot_send_file(path: str, kind: str = "file") -> dict[str, Any]:
     Gateway acceptance means submitted to the adapter, not a platform receipt.
     """
     session_id, user_id = trusted_route()
+    agent_id = trusted_agent_id()
     settings = tool_settings()
     content = await asyncio.to_thread(media_descriptor, settings.files_dir, session_id, path, kind, max_file_bytes=settings.max_file_bytes)
     # Created once per tool invocation; BridgeClient serializes once and keeps
     # exactly this ID and body during HTTP retries.
     result = await BridgeClient(settings).post("/v1/deliver", {
         "delivery_id": str(uuid4()), "session_id": session_id, "user_id": user_id,
-        "content": [content],
+        "agent_id": agent_id, "content": [content],
     })
     if result.get("accepted") is not True:
         raise BridgeError("The gateway did not accept this delivery or its result is uncertain; do not repeat the operation automatically.")

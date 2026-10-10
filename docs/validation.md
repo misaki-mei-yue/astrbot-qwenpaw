@@ -1,6 +1,19 @@
 # 验证记录
 
-日期：2026-10-10。当前版本：0.4.1 开发版，Windows 组合启动包与原生后台统一入口。
+日期：2026-10-10。已发布组合包基线为 0.4.1；本次新增个人助手开发改动，尚未更新正式运行容器和压缩包。
+
+## 个人助手与记忆互通开发验证
+
+- 完整 Windows Python 3.12 回归 **327 项，323 通过、4 项跳过，无失败**。其中两个跳过为 POSIX FIFO，另两个为需要显式开启的 Linux Chromium 检查。覆盖个人身份、账号绑定、群会话保留、旧回调撤销、路由迁移、逐次 Agent 身份、记忆分页与异步索引提示、工具权限和现有媒体 / 网关 / 启动器回归。
+- 独立 Linux 容器另行运行 27 项文件守卫和 14 项浏览器检查，**41 项全部通过**，包含两个真实 Chromium 用例。页面在容器 loopback 内提供；验证读取、点击、填写、不同用户 Cookie 分开，以及私网重定向拒绝。容器 `--network none`，未使用用户浏览器资料。后来新增的共享目录配置优先级检查纳入上述完整回归，守卫专项增至 34 项。
+- 官方 AstrBot 4.25.1 的真实核心执行 **11 项检查**：插件加载、原插件命令、完整多词记忆命令、普通聊天、官方工具执行器与 hooks、重放去重、身份拒绝、主动回传及清理。平台传输和 QwenPaw HTTP 为隔离测试边界。[真实 AstrBot 报告](personal-astrbot-validation.json)。
+- 官方 QwenPaw 2.2.1 已有固定镜像的独立无网络容器完成 **7 组检查**：两个私聊 Agent 和一个群 Agent 的真实 REST 创建 / 配置、原生 middleware 注册、无模型识别、自动记忆间隔与召回配置持久化、明确备注写入 / 更正 / 清空、原生 BM25 检索隔离及实际进程重启留存。[真实 QwenPaw 报告](personal-qwenpaw-validation.json)。测试没有接入正式运行数据。
+
+真实运行发现两个仅靠接口替身无法发现的差异，已修复：未配置 embedding 时 `scope=all` 重建返回 409，改为 BM25；原生重建接口的 `completed` 不保证刚写入的文件已被摄入。文件由 watcher 异步同步，本次观察约 4–6 秒，代码返回 `index_status=pending` 并明确提示。真实检查持续查询原生 `memory_search`，确认新词出现、旧词消失和跨用户不可召回；没有用替代检索实现制造通过结果。
+
+本轮 **0 次模型调用、0 次真实 QQ / 微信发送**。自动提炼与召回的配置已经验证；自然聊天中的自动提炼质量、真实模型推理、真实账号送达及全部第三方插件兼容性尚未验收。没有把“手动保存后检索成功”当作“自动形成用户画像”的证据。
+
+复现：`python -m unittest discover -s tests -v`；官方运行检查见 `scripts/check_astrbot_runtime.py`、`scripts/check_personal_runtime.py`。后者必须使用空的独立测试目录和固定官方镜像，不能挂载正式工作区。浏览器检查使用 `ASTRBOT_BROWSER_REAL_TESTS=1`、`ASTRBOT_BROWSER_EXECUTABLE=/usr/bin/chromium`；只读容器还需将 `XDG_CONFIG_HOME`、`XDG_CACHE_HOME` 指向可写测试目录。
 
 ## 0.4.1 Windows Docker 实机验收
 

@@ -18,6 +18,8 @@ from urllib.parse import quote, urlsplit
 
 import aiohttp
 
+from .identity import IdentityStore
+
 
 class BridgeError(RuntimeError):
     """An actionable failure safe to report without an upstream response body."""
@@ -43,6 +45,21 @@ class BridgeStore:
             );
         """)
         self.db.commit()
+        # Existing shared-agent routes are retained but are not implicitly
+        # authorized for the new personal workspaces.
+        columns = {row[1] for row in self.db.execute("PRAGMA table_info(routes)")}
+        for name, definition in {
+            "agent_id": "TEXT NOT NULL DEFAULT ''",
+            "person_id": "TEXT NOT NULL DEFAULT ''",
+            "scope": "TEXT NOT NULL DEFAULT ''",
+            "platform_id": "TEXT NOT NULL DEFAULT ''",
+            "active": "INTEGER NOT NULL DEFAULT 0",
+        }.items():
+            if name not in columns:
+                self.db.execute(f"ALTER TABLE routes ADD COLUMN {name} {definition}")
+        self.db.execute("CREATE TABLE IF NOT EXISTS retired_routes (session_id TEXT PRIMARY KEY, route_json TEXT NOT NULL)")
+        self.db.commit()
+        self.identities = IdentityStore(self.db)
 
     def get_or_create_session(self, origin: str, user_id: str, platform: str) -> dict:
         if not all(isinstance(x, str) and x for x in (origin, user_id, platform)):
@@ -52,7 +69,7 @@ class BridgeStore:
         ).fetchone()
         if row is None:
             self.db.execute(
-                "INSERT INTO routes VALUES (?,?,?,?)",
+                "INSERT INTO routes (session_id,origin,user_id,platform,active) VALUES (?,?,?,?,1)",
                 ("ab_" + secrets.token_hex(16), origin, user_id, platform),
             )
             self.db.commit()
@@ -60,6 +77,44 @@ class BridgeStore:
                 "SELECT * FROM routes WHERE origin=? AND user_id=?", (origin, user_id)
             ).fetchone()
         return dict(row)
+
+    def personal_session(self, origin: str, user_id: str, platform: str,
+                         platform_id: str, is_private: bool, *, new_session: bool = False) -> dict:
+        identity = self.identities.resolve(platform, platform_id, user_id, origin, is_private)
+        old = self.db.execute("SELECT * FROM routes WHERE origin=? AND user_id=?", (origin, user_id)).fetchone()
+        keys = ("agent_id", "person_id", "scope") if is_private else ("agent_id", "scope")
+        if not new_session and old and old["active"] and all(old[key] == identity[key] for key in keys) and old["platform_id"] == platform_id and old["platform"] == platform:
+            # Linking private accounts does not move a group's memory or its
+            # scheduled recipient. Only the informational person key changes.
+            if old["person_id"] != identity["person_id"]:
+                with self.db:
+                    self.db.execute("UPDATE routes SET person_id=? WHERE session_id=?", (identity["person_id"], old["session_id"]))
+                return self.get_session(old["session_id"])
+            return dict(old)
+        sid = "ab_" + secrets.token_hex(16)
+        with self.db:
+            if old:
+                self.db.execute("INSERT OR IGNORE INTO retired_routes VALUES (?,?)", (old["session_id"], json.dumps(dict(old))))
+                self.db.execute("DELETE FROM routes WHERE session_id=?", (old["session_id"],))
+            self.db.execute(
+                "INSERT INTO routes (session_id,origin,user_id,platform,agent_id,person_id,scope,platform_id,active) VALUES (?,?,?,?,?,?,?,?,1)",
+                (sid, origin, user_id, platform, identity["agent_id"], identity["person_id"], identity["scope"], platform_id),
+            )
+        return self.get_session(sid)
+
+    def redeem_link(self, platform, platform_id, user_id, origin, is_private, code):
+        """Commit binding and immediate retirement of old private routes together."""
+        with self.db:
+            self.db.execute("BEGIN IMMEDIATE")
+            identity = self.identities.redeem_link(platform, platform_id, user_id, origin, is_private, code)
+            old_routes = self.db.execute(
+                "SELECT * FROM routes WHERE platform=? AND platform_id=? AND user_id=? AND scope='private' AND agent_id<>?",
+                (platform, platform_id, user_id, identity["agent_id"]),
+            ).fetchall()
+            for old in old_routes:
+                self.db.execute("INSERT OR IGNORE INTO retired_routes VALUES (?,?)", (old["session_id"], json.dumps(dict(old))))
+                self.db.execute("DELETE FROM routes WHERE session_id=?", (old["session_id"],))
+        return identity
 
     def get_session(self, session_id: str) -> dict | None:
         row = self.db.execute(
@@ -292,7 +347,7 @@ class QwenPawClient:
     def _runtime_token(self, value):
         self.__token = value
 
-    async def chat(self, session_id: str, user_id: str, text: str, content=None, turn_id=None) -> list[dict]:
+    async def chat(self, session_id: str, user_id: str, text: str, content=None, turn_id=None, *, agent_id=None) -> list[dict]:
         turn_id = turn_id or uuid4().hex
         if not re.fullmatch(r"[0-9a-f]{32}", turn_id):
             raise ValueError("Invalid bridge turn ID")
@@ -306,7 +361,10 @@ class QwenPawClient:
             "request_context": request_context,
         }
         http = await self._session()
-        url = self.base_url + "/api/agents/" + quote(self.agent_id, safe="") + "/console/chat"
+        selected_agent = agent_id or self.agent_id
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", selected_agent):
+            raise ValueError("Invalid QwenPaw agent ID")
+        url = self.base_url + "/api/agents/" + quote(selected_agent, safe="") + "/console/chat"
         collector = AssistantCollector()
         for attempt in range(2):
             request_payload = payload if attempt == 0 else {

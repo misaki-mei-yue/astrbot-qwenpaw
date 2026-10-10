@@ -26,6 +26,9 @@ from qwenpaw_plugin_astrbot_bridge.media import media_descriptor, media_workspac
 SESSION = "ab_" + "a" * 32
 OTHER_SESSION = "ab_" + "b" * 32
 TURN_ID = "c" * 32
+PERSON_AGENT = "abp_" + "1" * 32
+OTHER_PERSON_AGENT = "abp_" + "2" * 32
+GROUP_AGENT = "abg_" + "3" * 32
 
 
 class RuntimeStub:
@@ -44,10 +47,14 @@ class RuntimeStub:
             "qwenpaw.app.channels.base", "qwenpaw.config", "qwenpaw.config.config",
             "qwenpaw.hooks", "qwenpaw.hooks.base", "qwenpaw.runtime",
             "qwenpaw.runtime.hooks", "qwenpaw.runtime.phases",
+            "agentscope", "agentscope.message", "agentscope.middleware", "agentscope.tool",
         ]}
         for field in ["session_id", "root_session_id", "user_id", "channel", "agent_id"]:
             setattr(self.modules["qwenpaw.app.agent_context"], "get_current_" + field,
                     lambda field=field: getattr(self.context, field))
+        # Match the official distinction: get falls back, peek never does.
+        self.modules["qwenpaw.app.agent_context"].get_current_agent_id = lambda: self.context.agent_id or "default"
+        self.modules["qwenpaw.app.agent_context"].peek_current_agent_id = lambda: self.context.agent_id or ""
         self.modules["qwenpaw.config.config"].load_agent_config = lambda agent_id: self.profile
         self.modules["qwenpaw.app.agent_context"].get_current_approval_route = lambda: self.context.approval_route
         self.modules["qwenpaw.app.agent_context"].set_current_approval_route = lambda route: setattr(self.context, "approval_route", route)
@@ -56,7 +63,16 @@ class RuntimeStub:
             def __init__(self, process, on_reply_sent=None, display_config=None):
                 self._process = process
                 self._on_reply_sent = on_reply_sent
+                self._workspace = None
 
+            def set_workspace(self, workspace, command_registry=None):
+                self._workspace = workspace
+                self._command_registry = command_registry
+
+        self.modules["agentscope.message"].TextBlock = SimpleNamespace
+        self.modules["agentscope.message"].ToolResultState = SimpleNamespace(ERROR="error")
+        self.modules["agentscope.middleware"].MiddlewareBase = type("MiddlewareBase", (), {})
+        self.modules["agentscope.tool"].ToolResponse = SimpleNamespace
         self.modules["qwenpaw.app.channels.base"].BaseChannel = BaseChannel
         self.modules["qwenpaw.hooks.base"].LifecycleHook = type("LifecycleHook", (), {})
         self.modules["qwenpaw.runtime.hooks"].HookResult = SimpleNamespace
@@ -97,6 +113,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
 
     def channel(self):
         channel = self.channel_module.AstrBotChannel.from_config(None, self.runtime.profile.channels.astrbot)
+        channel.set_workspace(SimpleNamespace(agent_id=self.runtime.context.agent_id))
         channel._client.post = AsyncMock(return_value={"accepted": True})
         return channel
 
@@ -117,6 +134,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["session_id"], SESSION)
         self.assertEqual(payload["user_id"], "owner")
         self.assertEqual(payload["turn_id"], TURN_ID)
+        self.assertEqual(payload["agent_id"], "default")
         self.assertTrue(payload["call_id"])
         self.assertEqual(payload["arguments"], {"query": "hi"})
 
@@ -125,6 +143,8 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
             await self.tools.astrbot_call_tool("search", {}, session_id=OTHER_SESSION)
         with self.assertRaises(TypeError):
             await self.tools.astrbot_call_tool("search", {}, turn_id=TURN_ID)
+        with self.assertRaises(TypeError):
+            await self.tools.astrbot_call_tool("search", {}, agent_id=PERSON_AGENT)
         self.assertEqual(list(inspect.signature(self.tools.astrbot_call_tool).parameters), ["tool_name", "arguments"])
         self.assertEqual(list(inspect.signature(self.tools.astrbot_list_tools).parameters), [])
 
@@ -226,7 +246,113 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(self.tools.BridgeClient, "post", new_callable=AsyncMock) as post:
             post.return_value = {"tools": []}
             await self.tools.astrbot_list_tools()
-        self.assertEqual(post.call_args.args, ("/v1/tools/list", {"session_id": SESSION, "user_id": "owner", "turn_id": TURN_ID}))
+        self.assertEqual(post.call_args.args, ("/v1/tools/list", {"session_id": SESSION, "user_id": "owner", "turn_id": TURN_ID, "agent_id": "default"}))
+
+    async def test_managed_agents_send_real_identity_on_every_tool_callback(self):
+        self.media_file()
+        for agent_id in (PERSON_AGENT, OTHER_PERSON_AGENT, GROUP_AGENT):
+            with self.subTest(agent_id=agent_id):
+                self.runtime.context.agent_id = agent_id
+                with patch.object(self.tools.BridgeClient, "post", new_callable=AsyncMock) as post:
+                    post.return_value = {"accepted": True, "tools": []}
+                    await self.tools.astrbot_list_tools()
+                    await self.tools.astrbot_call_tool("search", {})
+                    await self.tools.astrbot_send_file("outbound/report.txt")
+                self.assertEqual([call.args[0] for call in post.call_args_list],
+                                 ["/v1/tools/list", "/v1/tools/call", "/v1/deliver"])
+                self.assertTrue(all(call.args[1]["agent_id"] == agent_id for call in post.call_args_list))
+                self.assertTrue(all(call.args[1]["session_id"] == SESSION for call in post.call_args_list))
+
+    async def test_missing_agent_cannot_fall_back_to_active_default(self):
+        self.runtime.context.agent_id = None
+        self.assertEqual(self.runtime.modules["qwenpaw.app.agent_context"].get_current_agent_id(), "default")
+        with patch.object(self.tools.BridgeClient, "post", new_callable=AsyncMock) as post:
+            for operation in (self.tools.astrbot_list_tools, self.tools.astrbot_media_workspace):
+                with self.assertRaises(BridgeError):
+                    await operation()
+            with self.assertRaises(BridgeError):
+                await self.tools.astrbot_call_tool("search", {})
+            with self.assertRaises(BridgeError):
+                await self.tools.astrbot_send_file("outbound/report.txt")
+            post.assert_not_awaited()
+
+    async def test_malformed_managed_agent_ids_fail_closed(self):
+        for agent_id in ("abp_", "abp_" + "A" * 32, "abp_" + "1" * 31,
+                         PERSON_AGENT + "/x", "abx_" + "1" * 32, 123):
+            self.runtime.context.agent_id = agent_id
+            with self.subTest(agent_id=agent_id), self.assertRaises(BridgeError):
+                self.tools.trusted_route()
+
+    async def test_same_route_different_agent_cannot_impersonate_owner_at_gateway(self):
+        # This tests the wire identity and error path. The real server's route
+        # ownership checks have their own AstrBot/integration tests.
+        async def gateway(path, payload):
+            if payload["agent_id"] != PERSON_AGENT:
+                raise BridgeError("AstrBot bridge rejected request (HTTP 403).")
+            return {"tools": []}
+        with patch.object(self.tools.BridgeClient, "post", side_effect=gateway) as post:
+            self.runtime.context.agent_id = PERSON_AGENT
+            await self.tools.astrbot_list_tools()
+            self.runtime.context.agent_id = OTHER_PERSON_AGENT
+            with self.assertRaises(BridgeError):
+                await self.tools.astrbot_list_tools()
+        self.assertEqual([call.args[1]["agent_id"] for call in post.call_args_list],
+                         [PERSON_AGENT, OTHER_PERSON_AGENT])
+
+    async def test_cron_final_and_fixed_text_keep_workspace_identity_without_request(self):
+        self.runtime.context.agent_id = PERSON_AGENT
+        channel = self.channel()
+        # Official Cron can dispatch after request cleanup, using the channel
+        # that ChannelManager bound to its actual Agent workspace.
+        self.runtime.context.agent_id = None
+        self.runtime.context.channel = None
+        self.runtime.context.user_id = None
+        self.runtime.context.session_id = None
+        self.runtime.context.root_session_id = None
+        await channel.send_event(user_id="owner", session_id=SESSION, event=self.message(),
+                                 meta={"agent_id": OTHER_PERSON_AGENT})
+        await channel.send(SESSION, "reminder", {"session_id": SESSION, "user_id": "owner",
+                                               "agent_id": OTHER_PERSON_AGENT})
+        self.assertEqual(channel._client.post.await_count, 2)
+        self.assertTrue(all(call.args[1]["agent_id"] == PERSON_AGENT
+                            for call in channel._client.post.call_args_list))
+
+    async def test_channel_missing_native_agent_ignores_spoofed_metadata(self):
+        channel = self.channel_module.AstrBotChannel.from_config(
+            None, self.runtime.profile.channels.astrbot,
+            workspace_dir="/app/working/workspaces/default")
+        channel._client.post = AsyncMock(return_value={"accepted": True})
+        self.runtime.context.agent_id = None
+        self.runtime.context.channel = None
+        with self.assertRaises(BridgeError):
+            await channel.send_event(user_id="owner", session_id=SESSION, event=self.message(),
+                                     meta={"agent_id": "default"})
+        channel._client.post.assert_not_awaited()
+
+    async def test_channel_cannot_reuse_another_agent_workspace(self):
+        self.runtime.context.agent_id = PERSON_AGENT
+        channel = self.channel()
+        self.runtime.context.agent_id = OTHER_PERSON_AGENT
+        with self.assertRaises(BridgeError):
+            await channel.send_event(user_id="owner", session_id=SESSION, event=self.message())
+        channel._client.post.assert_not_awaited()
+
+    async def test_console_cannot_send_using_bound_astrbot_channel(self):
+        channel = self.channel()
+        self.runtime.context.channel = "console"
+        with self.assertRaises(BridgeError):
+            await channel.send_event(user_id="owner", session_id=SESSION, event=self.message())
+        self.runtime.context.agent_id = None
+        with self.assertRaises(BridgeError):
+            await channel.send_event(user_id="owner", session_id=SESSION, event=self.message())
+        channel._client.post.assert_not_awaited()
+
+    async def test_invalid_bound_workspace_cannot_fall_back_to_real_default(self):
+        channel = self.channel()
+        channel.set_workspace(SimpleNamespace())
+        with self.assertRaises(BridgeError):
+            await channel.send_event(user_id="owner", session_id=SESSION, event=self.message())
+        channel._client.post.assert_not_awaited()
 
     async def test_final_message_accepted_once(self):
         channel = self.channel()
@@ -305,12 +431,15 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
     async def test_registration_exposes_channel_and_context_bound_tools(self):
         module = importlib.import_module("qwenpaw_plugin_astrbot_bridge.plugin")
         api = SimpleNamespace(config={}, register_channel=unittest.mock.Mock(), register_tool=unittest.mock.Mock(),
-                              register_runtime_hook=unittest.mock.Mock())
+                              register_runtime_hook=unittest.mock.Mock(), register_middleware=unittest.mock.Mock())
         module.plugin.register(api)
         self.assertEqual(api.register_channel.call_args.kwargs["channel_class"].channel, "astrbot")
         self.assertEqual([call.kwargs["tool_name"] for call in api.register_tool.call_args_list],
-                         ["astrbot_list_tools", "astrbot_call_tool", "astrbot_media_workspace", "astrbot_send_file"])
+                         ["astrbot_list_tools", "astrbot_call_tool", "astrbot_media_workspace", "astrbot_send_file", "astrbot_browser"])
         self.assertEqual([call.args[0].phase for call in api.register_runtime_hook.call_args_list], ["pre_dispatch", "finally"])
+        api.register_middleware.assert_called_once()
+        self.assertEqual(api.register_middleware.call_args.args[0].__name__, "workspace_guard_factory")
+        self.assertEqual(api.register_middleware.call_args.kwargs, {"priority": 0})
 
     async def test_media_workspace_uses_true_root_and_allows_proactive_context(self):
         clear_turn_id()
@@ -330,7 +459,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
             await self.tools.astrbot_send_file("outbound/report.txt")
         endpoint, payload = post.call_args.args
         self.assertEqual(endpoint, "/v1/deliver")
-        self.assertEqual((payload["session_id"], payload["user_id"]), (SESSION, "owner"))
+        self.assertEqual((payload["session_id"], payload["user_id"], payload["agent_id"]), (SESSION, "owner", "default"))
         self.assertEqual(payload["content"], [{
             "type": "file", "path": SESSION + "/outbound/report.txt", "filename": "report.txt",
             "size": path.stat().st_size, "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),

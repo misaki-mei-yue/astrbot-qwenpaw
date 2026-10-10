@@ -26,7 +26,9 @@ from astrbot.api.event import AstrMessageEvent, MessageChain, ResultContentType,
 from astrbot.api.message_components import File, Image, Plain, Record, Video
 from astrbot.api.star import Context, Star
 
-from .bridge_core import BridgeStore, QwenPawClient
+from .bridge_core import BridgeError, BridgeStore, QwenPawClient
+from .identity import IdentityError
+from .personal_agent import PersonalAgentManager
 from .media_bridge import MediaBridge, MediaFailure, provider_component
 
 
@@ -78,6 +80,18 @@ def _has_selected_command(event: Any) -> bool:
     return any(handler.handler_full_name in params for handler in handlers)
 
 
+def _private_event(event: Any) -> bool:
+    """Use the platform's message type, never words supplied in the message."""
+    getter = getattr(event, "get_message_type", None)
+    kind = getter() if callable(getter) else getattr(getattr(event, "message_obj", None), "type", None)
+    kind = getattr(kind, "value", kind)
+    if kind is not None:
+        return kind == "FriendMessage"
+    # AstrBot's persisted unified origin has a platform/type/session shape.
+    parts = str(event.unified_msg_origin).split(":", 2)
+    return len(parts) == 3 and parts[1] == "FriendMessage"
+
+
 class QwenPawBridge(Star):
     """Keep chat ingress and plugin tools in AstrBot; delegate reasoning."""
 
@@ -93,6 +107,7 @@ class QwenPawBridge(Star):
         }
         self.token = os.environ.get("BRIDGE_TOKEN", config.get("bridge_token", ""))
         self._client: QwenPawClient | None = None
+        self._personal: PersonalAgentManager | None = None
         self._store: BridgeStore | None = None
         self._runner: web.AppRunner | None = None
         self._approval_task: asyncio.Task | None = None
@@ -135,6 +150,7 @@ class QwenPawBridge(Star):
             os.environ.get("QWENPAW_RUNTIME_INTERNAL_TOKEN", self.config.get("runtime_token", "")),
             timeout=self.chat_timeout,
         )
+        self._personal = PersonalAgentManager(self._client)
         app = web.Application(client_max_size=1024 * 1024, middlewares=[self._auth])
         app.router.add_post("/v1/tools/list", self._tools_list)
         app.router.add_post("/v1/tools/call", self._tools_call)
@@ -163,6 +179,7 @@ class QwenPawBridge(Star):
         if self._client:
             await self._client.close()
             self._client = None
+        self._personal = None
         self._active.clear()
         self._delivery_locks.clear()
         self._chat_locks.clear()
@@ -202,11 +219,29 @@ class QwenPawBridge(Star):
         sid = _identifier(payload, "session_id")
         user = _identifier(payload, "user_id")
         route = self._store.get_session(sid)
-        if not route or route.get("user_id") != user or user not in self.owners:
+        if not route or not route.get("active") or route.get("user_id") != user or user not in self.owners:
             raise BridgeFault(403, "route_not_authorized")
+        expected_agent = route.get("agent_id")
+        if expected_agent and payload.get("agent_id") != expected_agent:
+            raise BridgeFault(403, "agent_route_mismatch")
+        if not expected_agent and payload.get("agent_id") not in (None, self._client.agent_id):
+            raise BridgeFault(403, "agent_route_mismatch")
         if route.get("platform") not in self.platforms:
             raise BridgeFault(403, "platform_not_authorized")
         return sid, user, route
+
+    def _personal_route(self, event: AstrMessageEvent) -> dict:
+        return self._store.personal_session(
+            event.unified_msg_origin, event.get_sender_id(), event.get_platform_name(),
+            event.get_platform_id(), _private_event(event),
+        )
+
+    async def _ensure_personal(self, route: dict):
+        if self._personal is None:
+            raise RuntimeError("Personal workspace manager is not ready")
+        if route["scope"] == "private":
+            self._store.identities.activate(route["person_id"])
+        return await self._personal.ensure_agent(route["agent_id"], scope=route["scope"])
 
     def _turn(self, sid: str, user: str, turn_id: str | None = None) -> ActiveTurn:
         turn = self._active.get(sid)
@@ -391,6 +426,7 @@ class QwenPawBridge(Star):
         delivery_id = _identifier(payload, "delivery_id")
         key = sid + ":" + delivery_id
         async with self._delivery_locks.setdefault(sid, asyncio.Lock()):
+            sid, user, route = self._route(payload)
             receipt = self._completed_receipt("delivery", key)
             if receipt is not None:
                 return web.json_response(receipt)
@@ -398,6 +434,9 @@ class QwenPawBridge(Star):
                 chain = await self._media.output_components(sid, payload.get("content"), route["platform"])
             except MediaFailure as exc:
                 raise BridgeFault(400, str(exc)) from None
+            # Account linking or /paw new can revoke a route while a callback
+            # waits for its lock or for an attachment snapshot to finish.
+            sid, user, route = self._route(payload)
             if not self._store.claim("delivery", key):
                 raise BridgeFault(409, "delivery_already_in_progress_or_uncertain")
             result = {"accepted": False, "session_id": sid}
@@ -434,17 +473,86 @@ class QwenPawBridge(Star):
             yield event.plain_result("桥接未启用或尚未就绪。")
             event.stop_event()
             return
-        route = self._store.get_or_create_session(
-            event.unified_msg_origin, event.get_sender_id(), event.get_platform_name()
-        )
+        identity_args = (event.get_platform_name(), event.get_platform_id(), event.get_sender_id(), event.unified_msg_origin, _private_event(event))
+        # AstrBot parses only positional tokens; preserve the full memory text.
+        pieces = event.get_message_str().strip().split(maxsplit=2)
+        argument = pieces[2] if len(pieces) == 3 else request_id
+        if action == "link":
+            try:
+                if argument:
+                    self._store.redeem_link(*identity_args, argument.strip())
+                    message = "账号绑定完成：两边私聊将使用同一个个人记忆空间。群聊保持独立。"
+                else:
+                    code = self._store.identities.create_link(*identity_args)
+                    message = f"在你另一个已获授权的账号私聊里发送：\n/paw link {code}\n绑定码10分钟有效，只给你自己的账号使用。已有独立记忆的账号不会被自动合并。"
+            except IdentityError as exc:
+                message = str(exc)
+            yield event.plain_result(message)
+            event.stop_event()
+            return
+        route = self._personal_route(event)
+        if action == "status":
+            kind = "个人" if route["scope"] == "private" else "当前群内的个人"
+            message = f"桥接已授权。当前使用{kind}记忆空间。首次对话或记忆操作时自动建立工作区。\n助手ID：{route['agent_id']}\n接收会话：{route['session_id']}\n在QwenPaw后台按助手ID选择对应助手查看记忆、配置模型和任务。\n已放行AstrBot工具：{'全部符合会话权限的工具' if '*' in self.tool_allowlist else len(self.tool_allowlist)}。"
+            yield event.plain_result(message)
+            event.stop_event()
+            return
+        if action == "new":
+            if self._chat_locks.get(route["agent_id"], asyncio.Lock()).locked():
+                message = "当前还有任务执行中，请完成后再开始新会话。"
+            else:
+                self._store.personal_session(event.unified_msg_origin, event.get_sender_id(), event.get_platform_name(), event.get_platform_id(), _private_event(event), new_session=True)
+                message = "已开始新会话，长期记忆保留。旧会话的主动任务需在QwenPaw中重新选择接收会话。"
+            yield event.plain_result(message)
+            event.stop_event()
+            return
+        if action in {"memory", "remember", "correct", "forget"}:
+            lock = self._chat_locks.setdefault(route["agent_id"], asyncio.Lock())
+            try:
+                async with lock:
+                    await self._ensure_personal(route)
+                    aid = route["agent_id"]
+                    note = None
+                    if action == "memory":
+                        if argument and (not argument.isdecimal() or len(argument) > 3 or int(argument) < 1):
+                            raise BridgeError("用法：/paw memory [页码]，例如 /paw memory 2。")
+                        notes = await self._personal.memory_list(aid)
+                        pages = max(1, (len(notes) + 9) // 10)
+                        page = int(argument) if argument else 1
+                        if page > pages:
+                            raise BridgeError(f"手动记忆共 {pages} 页，请使用 /paw memory 1 等有效页码。")
+                        message = "\n".join(f"{item['id']}：{item['text'][:200]}{'…' if len(item['text']) > 200 else ''}" for item in notes[(page-1)*10:page*10]) or "还没有手动记忆。用 /paw remember 内容 记录。"
+                        message += f"\n第 {page}/{pages} 页，共 {len(notes)} 条。使用 /paw memory 页码 翻页。"
+                        message += "\n这里列出手动记忆；自动提炼的记忆可在对应QwenPaw工作区查看。"
+                    elif action == "remember" and argument:
+                        note = await self._personal.remember(aid, argument)
+                        message = f"已保存记忆 {note['id']}：{note['text']}\n搜索索引会稍后同步，刚保存时不一定能立即召回。"
+                    elif action == "correct" and len(argument.split(maxsplit=1)) == 2:
+                        note_id, text = argument.split(maxsplit=1)
+                        note = await self._personal.correct(aid, note_id, text)
+                        message = "已更正这条手动记忆。搜索索引会稍后同步，期间可能短暂召回旧内容。"
+                    elif action == "forget" and argument:
+                        note = await self._personal.forget(aid, argument.strip())
+                        message = "已移除这条手动记忆。搜索索引会稍后同步，期间可能短暂召回旧内容。历史聊天和另外提炼的自动记忆不会一起删除，可在QwenPaw中继续管理。"
+                    else:
+                        message = "用法：/paw remember 内容；/paw correct 记忆ID 新内容；/paw forget 记忆ID。"
+                    if isinstance(note, dict) and note.get("index_warning"):
+                        message += "\n" + str(note["index_warning"])[:600]
+            except BridgeError as exc:
+                message = str(exc)[:600]
+            except Exception:
+                message = "记忆操作未能确认完成，请检查QwenPaw工作区状态后再操作；不会切换到其他人的记忆空间。"
+            yield event.plain_result(message)
+            event.stop_event()
+            return
         if action not in {"approve", "deny", "pending"}:
-            yield event.plain_result("命令：/paw whoami；/paw pending；/paw approve 请求ID；/paw deny 请求ID。")
+            yield event.plain_result("命令：/paw whoami；/paw status；/paw link [绑定码]；/paw new；/paw memory；/paw remember 内容；/paw correct 记忆ID 内容；/paw forget 记忆ID；/paw pending；/paw approve 请求ID；/paw deny 请求ID。")
             event.stop_event()
             return
         try:
             pending = [item for item in await self._client.pending_approvals()
                        if item.get("session_id") == route["session_id"]
-                       and item.get("owner_agent_id") == self._client.agent_id]
+                       and item.get("owner_agent_id") == route["agent_id"]]
             if action == "pending":
                 message = "\n\n".join(
                     f"请求ID：{item.get('request_id', '')}\n操作：{str(item.get('title') or '需要审核的操作')[:200]}\n目标：{str(item.get('target') or '(服务未提供目标；建议拒绝并在后台核实)')[:1000]}"
@@ -468,11 +576,11 @@ class QwenPawBridge(Star):
                 for item in await self._client.pending_approvals():
                     sid = item.get("session_id")
                     request_id = item.get("request_id")
-                    if (not isinstance(sid, str) or not isinstance(request_id, str)
-                            or item.get("owner_agent_id") != self._client.agent_id):
+                    if not isinstance(sid, str) or not isinstance(request_id, str):
                         continue
                     route = self._store.get_session(sid)
-                    if not route or route.get("user_id") not in self.owners or route.get("platform") not in self.platforms:
+                    if (not route or not route.get("active") or route.get("user_id") not in self.owners or route.get("platform") not in self.platforms
+                            or item.get("owner_agent_id") != (route.get("agent_id") or self._client.agent_id)):
                         continue
                     key = sid + ":" + request_id
                     if not self._store.claim("approval_notice", key):
@@ -532,11 +640,9 @@ class QwenPawBridge(Star):
             yield event.plain_result("平台未提供可用于防重的消息ID，本次尚未转发。请查看平台连接状态。")
             event.stop_event()
             return
-        route = self._store.get_or_create_session(
-            event.unified_msg_origin, event.get_sender_id(), event.get_platform_name()
-        )
+        route = self._personal_route(event)
         sid = route["session_id"]
-        lock = self._chat_locks.setdefault(sid, asyncio.Lock())
+        lock = self._chat_locks.setdefault(route["agent_id"], asyncio.Lock())
         async with lock:
             chat_key = sid + ":" + message_id
             if not self._store.claim("chat", chat_key):
@@ -546,6 +652,9 @@ class QwenPawBridge(Star):
             self._active[sid] = turn
             submitted = False
             try:
+                await self._ensure_personal(route)
+                if not await self._personal.model_ready(route["agent_id"]):
+                    raise BridgeError("QwenPaw 还没有配置可用模型。请先在其后台选择模型；个人记忆的手动保存和管理仍可使用。")
                 native_content = []
                 if text:
                     native_content.append({"type": "text", "text": text})
@@ -556,6 +665,7 @@ class QwenPawBridge(Star):
                 content = await self._client.chat(
                     sid, event.get_sender_id(), text or "请处理本条消息的附件。",
                     content=native_content, turn_id=turn.turn_id,
+                    agent_id=route["agent_id"],
                 )
                 chain = await self._media.output_components(sid, content, event.get_platform_name(), allow_native=True)
                 result = event.chain_result(chain)
@@ -568,11 +678,13 @@ class QwenPawBridge(Star):
                     yield event.plain_result("返回的附件未通过安全检查，本次没有发送附件；请检查文件路径、大小和完整性。")
                 else:
                     yield event.plain_result("附件无法安全读取或下载，本次未转发；请检查附件大小、来源路径和链接。")
+            except BridgeError as exc:
+                yield event.plain_result(str(exc)[:600])
             except Exception:
                 if submitted:
                     yield event.plain_result("QwenPaw 本次未返回可发送的内容。任务可能仍在执行，请勿重复提交；可查看后台状态。")
                 else:
-                    yield event.plain_result("附件读取失败，本次未提交任务。请重新发送附件。")
+                    yield event.plain_result("个人助手或附件尚未准备好，本次未提交任务。请检查QwenPaw后台与桥接配置。")
             finally:
                 self._active.pop(sid, None)
                 if self._store:

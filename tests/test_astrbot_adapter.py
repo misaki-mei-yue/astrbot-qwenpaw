@@ -177,7 +177,8 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
             agent_id="default", chat=AsyncMock(return_value=[{"type": "text", "text": "reply"}]),
             pending_approvals=AsyncMock(return_value=[]), approval=AsyncMock(),
         )
-        self.route = self.bridge._store.get_or_create_session("wx:FriendMessage:owner", "owner", "weixin_oc")
+        self.bridge._personal = types.SimpleNamespace(ensure_agent=AsyncMock(return_value={}), model_ready=AsyncMock(return_value=True), memory_list=AsyncMock(return_value=[]), remember=AsyncMock(return_value={"id": "a" * 32, "text": "prefers tea"}), correct=AsyncMock(return_value={}), forget=AsyncMock(return_value={}))
+        self.route = self.bridge._store.personal_session("wx:FriendMessage:owner", "owner", "weixin_oc", "wx", True)
         self.sid = self.route["session_id"]
 
     def tearDown(self):
@@ -189,6 +190,93 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(closed.owners, set())
         self.assertEqual(closed.tool_allowlist, set())
 
+    async def test_missing_model_does_not_submit_and_allows_same_message_after_configuration(self):
+        self.bridge._personal.model_ready.return_value = False
+        result = [item async for item in self.bridge.forward_chat(Event(message_id="configure-later"))]
+        self.assertIn("还没有配置可用模型", result[0].chain[0].text)
+        self.bridge._client.chat.assert_not_awaited()
+        self.assertNotIn(self.sid, self.bridge._active)
+        self.bridge._personal.model_ready.return_value = True
+        result = [item async for item in self.bridge.forward_chat(Event(message_id="configure-later"))]
+        self.assertEqual(result[0].chain[0].text, "reply")
+        self.bridge._client.chat.assert_awaited_once()
+
+    async def test_provision_failure_never_falls_back_to_shared_agent(self):
+        self.bridge._personal.ensure_agent.side_effect = adapter.BridgeError("个人助手隔离设置已改变")
+        result = [item async for item in self.bridge.forward_chat(Event())]
+        self.assertIn("隔离设置已改变", result[0].chain[0].text)
+        self.bridge._client.chat.assert_not_awaited()
+
+    async def test_explicit_memory_works_without_model_and_preserves_spaces(self):
+        self.bridge._personal.model_ready.return_value = False
+        event = Event(text="/paw remember 我喜欢 清淡的茶")
+        result = [item async for item in self.bridge.paw_command(event, "remember", "我喜欢")]
+        self.bridge._personal.remember.assert_awaited_once_with(self.route["agent_id"], "我喜欢 清淡的茶")
+        self.assertIn("已保存记忆", result[0].chain[0].text)
+        self.assertIn("搜索索引会稍后同步", result[0].chain[0].text)
+        self.bridge._personal.model_ready.assert_not_awaited()
+        self.bridge._client.chat.assert_not_awaited()
+
+    async def test_memory_index_failure_does_not_claim_write_failed(self):
+        self.bridge._personal.remember.side_effect = adapter.BridgeError("记忆文件已更新，但检索索引尚未确认完成")
+        result = [item async for item in self.bridge.paw_command(Event(text="/paw remember tea"), "remember", "tea")]
+        self.assertIn("记忆文件已更新", result[0].chain[0].text)
+
+    async def test_memory_saved_with_index_warning_shows_note_id_and_warning(self):
+        self.bridge._personal.remember.return_value = {"id": "a" * 32, "text": "tea", "index_status": "pending", "index_warning": "刷新请求未完成，勿重复新增"}
+        result = [item async for item in self.bridge.paw_command(Event(text="/paw remember tea"), "remember", "tea")]
+        self.assertIn("a" * 32, result[0].chain[0].text)
+        self.assertIn("勿重复新增", result[0].chain[0].text)
+
+    async def test_memory_listing_can_reach_later_notes_and_bounds_reply_size(self):
+        self.bridge._personal.memory_list.return_value = [{"id": f"{index:032x}", "text": "茶" * 8000} for index in range(21)]
+        result = [item async for item in self.bridge.paw_command(Event(text="/paw memory 3"), "memory", "3")]
+        text = result[0].chain[0].text
+        self.assertIn(f"{20:032x}", text)
+        self.assertIn("第 3/3 页", text)
+        self.assertLess(len(text), 1000)
+        result = [item async for item in self.bridge.paw_command(Event(text="/paw memory 4"), "memory", "4")]
+        self.assertIn("有效页码", result[0].chain[0].text)
+
+    async def test_correct_and_forget_are_bound_to_current_person(self):
+        note = "b" * 32
+        [item async for item in self.bridge.paw_command(Event(text=f"/paw correct {note} 喜欢红茶"), "correct", note)]
+        self.bridge._personal.correct.assert_awaited_once_with(self.route["agent_id"], note, "喜欢红茶")
+        result = [item async for item in self.bridge.paw_command(Event(text=f"/paw forget {note}"), "forget", note)]
+        self.bridge._personal.forget.assert_awaited_once_with(self.route["agent_id"], note)
+        self.assertIn("不会一起删除", result[0].chain[0].text)
+        self.assertIn("短暂召回旧内容", result[0].chain[0].text)
+
+    async def test_new_session_preserves_person_and_revokes_previous_callback(self):
+        [item async for item in self.bridge.paw_command(Event(), "new")]
+        current = self.bridge._personal_route(Event())
+        self.assertEqual(current["agent_id"], self.route["agent_id"])
+        self.assertNotEqual(current["session_id"], self.sid)
+        with self.assertRaises(adapter.BridgeFault):
+            self.bridge._route({"session_id": self.sid, "user_id": "owner", "agent_id": self.route["agent_id"]})
+
+    async def test_groups_do_not_use_private_agent_and_different_members_do_not_share(self):
+        first = self.bridge._personal_route(Event(origin="wx:GroupMessage:group"))
+        other = self.bridge._personal_route(Event(user="other", origin="wx:GroupMessage:group"))
+        self.assertEqual(first["scope"], "group")
+        self.assertNotEqual(first["agent_id"], self.route["agent_id"])
+        self.assertNotEqual(first["agent_id"], other["agent_id"])
+
+    async def test_link_is_private_only_and_preserves_person_after_restart(self):
+        denied = [item async for item in self.bridge.paw_command(Event(origin="wx:GroupMessage:group"), "link")]
+        self.assertIn("私聊", denied[0].chain[0].text)
+        code = self.bridge._store.identities.create_link("weixin_oc", "wx", "owner", "wx:FriendMessage:owner", True)
+        event = Event(origin="qq:FriendMessage:owner", text=f"/paw link {code}")
+        event.get_platform_name = lambda: "aiocqhttp"
+        event.get_platform_id = lambda: "qq"
+        result = [item async for item in self.bridge.paw_command(event, "link", code)]
+        self.assertIn("绑定完成", result[0].chain[0].text)
+        self.bridge._store.close()
+        self.bridge._store = BridgeStore(Path(self.temp.name) / "state.sqlite3")
+        qq = self.bridge._personal_route(event)
+        self.assertEqual(qq["agent_id"], self.route["agent_id"])
+        self.assertNotEqual(qq["session_id"], self.sid)
+
     async def test_missing_or_wrong_bearer_is_rejected(self):
         handler = AsyncMock()
         response = await self.bridge._auth(Request({}, "Bearer wrong"), handler)
@@ -197,7 +285,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_callback_cannot_change_owner_or_session(self):
         for body in [
-            {"session_id": self.sid, "user_id": "intruder"},
+            {"session_id": self.sid, "agent_id": self.route["agent_id"], "user_id": "intruder"},
             {"session_id": "nonexistent", "user_id": "owner"},
         ]:
             with self.assertRaises(adapter.BridgeFault) as exc:
@@ -212,7 +300,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
             self.bridge._turn(self.sid, "owner")
 
     async def test_completed_delivery_replay_has_one_side_effect(self):
-        body = {"session_id": self.sid, "user_id": "owner", "delivery_id": "d1",
+        body = {"session_id": self.sid, "agent_id": self.route["agent_id"], "user_id": "owner", "delivery_id": "d1",
                 "content": [{"type": "text", "text": "later"}]}
         first = await self.bridge._deliver(Request(body))
         second = await self.bridge._deliver(Request(body))
@@ -222,13 +310,35 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_partial_delivery_error_does_not_retry(self):
         self.context.send_message.side_effect = RuntimeError("private value must never be returned")
-        body = {"session_id": self.sid, "user_id": "owner", "delivery_id": "d2",
+        body = {"session_id": self.sid, "agent_id": self.route["agent_id"], "user_id": "owner", "delivery_id": "d2",
                 "content": [{"type": "text", "text": "later"}]}
         first = await self.bridge._deliver(Request(body))
         second = await self.bridge._deliver(Request(body))
         self.assertEqual(first.body, second.body)
         self.assertNotIn(b"private value", first.body)
         self.context.send_message.assert_awaited_once()
+
+    async def test_queued_delivery_cannot_use_a_retired_session(self):
+        lock = self.bridge._delivery_locks.setdefault(self.sid, asyncio.Lock())
+        await lock.acquire()
+        body = {"session_id": self.sid, "agent_id": self.route["agent_id"], "user_id": "owner", "delivery_id": "queued", "content": [{"type": "text", "text": "obsolete"}]}
+        task = asyncio.create_task(self.bridge._deliver(Request(body)))
+        await asyncio.sleep(0)
+        [item async for item in self.bridge.paw_command(Event(), "new")]
+        lock.release()
+        with self.assertRaises(adapter.BridgeFault):
+            await task
+        self.context.send_message.assert_not_awaited()
+
+    async def test_delivery_rechecks_route_after_waiting_for_media(self):
+        async def media(*args, **kwargs):
+            [item async for item in self.bridge.paw_command(Event(), "new")]
+            return [Plain("obsolete")]
+        self.bridge._media.output_components = media
+        body = {"session_id": self.sid, "agent_id": self.route["agent_id"], "user_id": "owner", "delivery_id": "media", "content": [{"type": "text", "text": "obsolete"}]}
+        with self.assertRaises(adapter.BridgeFault):
+            await self.bridge._deliver(Request(body))
+        self.context.send_message.assert_not_awaited()
 
     async def test_running_receipt_is_not_reported_as_completed(self):
         self.bridge._store.claim("tool", self.sid + ":c1")
@@ -288,8 +398,8 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_approval_cannot_cross_session_or_agent(self):
         self.bridge._client.pending_approvals.return_value = [
-            {"session_id": self.sid, "owner_agent_id": "other-agent", "request_id": "other"},
-            {"session_id": "other-session", "owner_agent_id": "default", "request_id": "cross"},
+            {"session_id": self.sid, "agent_id": self.route["agent_id"], "owner_agent_id": "other-agent", "request_id": "other"},
+            {"session_id": "other-session", "owner_agent_id": self.route["agent_id"], "request_id": "cross"},
         ]
         for request_id in ("other", "cross"):
             result = [item async for item in self.bridge.paw_command(Event(), "approve", request_id)]
@@ -298,7 +408,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_pending_and_approval_use_original_route_owner(self):
         self.bridge._client.pending_approvals.return_value = [
-            {"session_id": self.sid, "owner_agent_id": "default", "request_id": "a1",
+            {"session_id": self.sid, "agent_id": self.route["agent_id"], "owner_agent_id": self.route["agent_id"], "request_id": "a1",
              "title": "write file", "target": "/workspace/report.txt"},
         ]
         result = [item async for item in self.bridge.paw_command(Event(), "pending")]
@@ -392,7 +502,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         self.bridge._active[self.sid] = turn
         self.bridge._available_tools = AsyncMock(return_value={"lookup": Tool()})
         self.bridge._execute_tool = AsyncMock(return_value={"content": [{"type": "text", "text": "result"}], "isError": False})
-        body = {"call_id": "call-1", "session_id": self.sid, "user_id": "owner", "turn_id": turn.turn_id,
+        body = {"call_id": "call-1", "session_id": self.sid, "agent_id": self.route["agent_id"], "user_id": "owner", "turn_id": turn.turn_id,
                 "tool_name": "lookup", "arguments": {"query": "safe"}}
         first = await self.bridge._tools_call(Request(body))
         second = await self.bridge._tools_call(Request(body))
@@ -409,7 +519,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         original = adapter.ActiveTurn(Event(), "owner", time.monotonic() + 60)
         self.bridge._active[self.sid] = original
         await original.tool_lock.acquire()
-        body = {"call_id": "queued", "session_id": self.sid, "user_id": "owner", "turn_id": original.turn_id,
+        body = {"call_id": "queued", "session_id": self.sid, "agent_id": self.route["agent_id"], "user_id": "owner", "turn_id": original.turn_id,
                 "tool_name": "lookup", "arguments": {"query": "safe"}}
         task = asyncio.create_task(self.bridge._tools_call(Request(body)))
         await asyncio.sleep(0)
@@ -440,7 +550,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
             return [item async for item in self.bridge.forward_chat(event)]
 
         first = asyncio.create_task(consume(first_event))
-        await started.wait()
+        await asyncio.wait_for(started.wait(), timeout=3)
         second = asyncio.create_task(consume(second_event))
         await asyncio.sleep(0)
         self.assertEqual(calls, 1)
@@ -454,7 +564,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         current_turn = adapter.ActiveTurn(Event(message_id="new"), "owner", time.monotonic() + 60)
         self.bridge._active[self.sid] = current_turn
         self.bridge._available_tools = AsyncMock(return_value={})
-        body = {"session_id": self.sid, "user_id": "owner"}
+        body = {"session_id": self.sid, "agent_id": self.route["agent_id"], "user_id": "owner"}
         with self.assertRaises(adapter.BridgeFault) as exc:
             await self.bridge._tools_list(Request(body))
         self.assertEqual(exc.exception.code, "invalid_turn_id")
@@ -470,7 +580,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         await anext(stream)
         nonce = self.bridge._active[self.sid].turn_id
         self.assertRegex(nonce, "^[0-9a-f]{32}$")
-        self.bridge._client.chat.assert_awaited_once_with(self.sid, "owner", "hello", content=[{"type": "text", "text": "hello"}], turn_id=nonce)
+        self.bridge._client.chat.assert_awaited_once_with(self.sid, "owner", "hello", content=[{"type": "text", "text": "hello"}], turn_id=nonce, agent_id=self.route["agent_id"])
         await stream.aclose()
 
     async def test_completed_tool_receipt_is_bound_to_its_original_nonce(self):
@@ -481,7 +591,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         result = {"content": [{"type": "text", "text": "old receipt"}], "isError": False}
         self.bridge._store.claim("tool", key)
         self.bridge._store.finish("tool", key, result)
-        body = {"session_id": self.sid, "user_id": "owner", "turn_id": old.turn_id,
+        body = {"session_id": self.sid, "agent_id": self.route["agent_id"], "user_id": "owner", "turn_id": old.turn_id,
                 "call_id": "same-call-id", "tool_name": "lookup", "arguments": {}}
         old_response = await self.bridge._tools_call(Request(body))
         self.assertIn(b"old receipt", old_response.body)

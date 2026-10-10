@@ -422,7 +422,8 @@ class RuntimeCheck:
             self.report["persistence"] = {"memory_file": True, "reme_search": True, "cron_job": True,
                                           "tool_disabled_setting": True, "session_file": any((self.working / "workspaces/default/sessions/astrbot").glob("*.json"))}
             assert len(self.calls) == 2 and all(call["turn_id"] == TURN for call in self.calls)
-            assert len(self.report["bridge_tools"]) == 4 and all(tool["enabled"] for tool in self.report["bridge_tools"])
+            expected_bridge = {"astrbot_list_tools", "astrbot_call_tool", "astrbot_media_workspace", "astrbot_send_file", "astrbot_browser"}
+            assert {tool["name"] for tool in self.report["bridge_tools"]} == expected_bridge and all(tool["enabled"] for tool in self.report["bridge_tools"])
             assert any(plugin.get("id") == "astrbot-bridge" and plugin.get("loaded") for plugin in self.report["plugins"])
             self.report.update(passed=True, gateway_calls=self.calls, deliveries=self.deliveries,
                                exact_test_approvals=self.approvals, model_calls=len(self.model_requests))

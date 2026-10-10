@@ -7,10 +7,14 @@ from .tools import astrbot_call_tool, astrbot_list_tools, astrbot_media_workspac
 class AstrBotBridgePlugin:
     def register(self, api):
         from .runtime_hooks import BridgeTurnCleanupHook, BridgeTurnContextHook
+        from .workspace_guard import configure_workspace_guard, workspace_guard_factory
+        from .browser import astrbot_browser
 
         configure_tools(api.config)
+        configure_workspace_guard(api.config)
         api.register_runtime_hook(BridgeTurnContextHook())
         api.register_runtime_hook(BridgeTurnCleanupHook())
+        api.register_middleware(workspace_guard_factory, priority=0)
         api.register_channel(
             channel_class=AstrBotChannel,
             label="AstrBot 微信 / QQ",
@@ -47,6 +51,13 @@ class AstrBotBridgePlugin:
             tool_name="astrbot_send_file",
             tool_func=astrbot_send_file,
             description="发送当前会话outbound中的真实本地文件，不接受远程URL或其他用户文件。",
+            enabled=True,
+            tool_type="network",
+        )
+        api.register_tool(
+            tool_name="astrbot_browser",
+            tool_func=astrbot_browser,
+            description="在本用户独立浏览器中打开网页、读取、点击和填写；参数为结构化操作，不执行任意代码。",
             enabled=True,
             tool_type="network",
         )

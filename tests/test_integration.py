@@ -53,6 +53,7 @@ class HttpIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.executions = []
         self.gateway_requests = []
         self.qwen_requests = []
+        self.qwen_paths = []
         self.approval_requests = []
         self.fake_errors = []
         self.hooks = SimpleNamespace(on_tool_start=AsyncMock(), on_tool_end=AsyncMock())
@@ -92,7 +93,12 @@ class HttpIntegrationTests(unittest.IsolatedAsyncioTestCase):
         })
         self.bridge.token = self.bridge_token
         self.bridge._store = BridgeStore(Path(self.temp.name) / "bridge.sqlite3")
-        self.route = self.bridge._store.get_or_create_session("wx:FriendMessage:owner", "owner", "weixin_oc")
+        self.route = self.bridge._store.personal_session(
+            "wx:FriendMessage:owner", "owner", "weixin_oc", platform_id="wx", is_private=True)
+        self.agent_id = self.route["agent_id"]
+        self.runtime.context.agent_id = self.agent_id
+        self.bridge._personal = SimpleNamespace(
+            ensure_agent=AsyncMock(), model_ready=AsyncMock(return_value=True))
         self.sid = self.route["session_id"]
 
         @web.middleware
@@ -115,7 +121,7 @@ class HttpIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.callback = BridgeClient(BridgeSettings(self.gateway_url, self.bridge_token, timeout=3, attempts=1))
 
         fake_qwen = web.Application()
-        fake_qwen.router.add_post("/api/agents/default/console/chat", self._fake_chat)
+        fake_qwen.router.add_post("/api/agents/{agent_id}/console/chat", self._fake_chat)
         fake_qwen.router.add_get("/api/approval/list", self._fake_pending)
         fake_qwen.router.add_post("/api/approval/approve", self._fake_approval)
         fake_qwen.router.add_post("/api/approval/deny", self._fake_approval)
@@ -140,13 +146,13 @@ class HttpIntegrationTests(unittest.IsolatedAsyncioTestCase):
         address = runner.addresses[0]
         return runner, f"http://127.0.0.1:{address[1]}"
 
-    async def _bind_runtime(self, body):
+    async def _bind_runtime(self, body, *, agent_id=None):
         self.runtime.context.root_session_id = body["session_id"]
         # A child task's own session cannot redirect a callback away from root.
         self.runtime.context.session_id = "child-task-session"
         self.runtime.context.user_id = body["user_id"]
         self.runtime.context.channel = body["channel"]
-        self.runtime.context.agent_id = "default"
+        self.runtime.context.agent_id = agent_id if agent_id is not None else self.agent_id
         self.runtime.context.approval_route = {
             "root_session_id": body["session_id"], "user_id": body["user_id"],
             "channel": body["channel"], "channel_meta": {},
@@ -164,10 +170,13 @@ class HttpIntegrationTests(unittest.IsolatedAsyncioTestCase):
     async def _fake_chat(self, request):
         if request.headers.get("X-QwenPaw-Runtime-Token") != self.runtime_token:
             return web.json_response({"error": "unauthorized"}, status=401)
+        if request.match_info["agent_id"] != self.agent_id:
+            return web.json_response({"error": "unexpected_agent"}, status=404)
         body = await request.json()
         self.qwen_requests.append(body)
+        self.qwen_paths.append(request.path)
         try:
-            await self._bind_runtime(body)
+            await self._bind_runtime(body, agent_id=request.match_info["agent_id"])
             if self.media_chat:
                 return await self._fake_media_chat(request, body)
             listing = await self.tools.astrbot_list_tools()
@@ -300,14 +309,16 @@ class HttpIntegrationTests(unittest.IsolatedAsyncioTestCase):
         target = Path(workspace["outbound_dir"]) / "safe.txt"
         target.write_text("original", encoding="utf-8")
         descriptor = media_descriptor(str(self.files_root), self.sid, str(target), "file")
-        payload = {"session_id": self.sid, "user_id": "owner", "delivery_id": "tampered", "content": [descriptor]}
+        payload = {"session_id": self.sid, "user_id": "owner", "agent_id": self.agent_id,
+                   "delivery_id": "tampered", "content": [descriptor]}
         target.write_text("modified", encoding="utf-8")
         with self.assertRaisesRegex(BridgeError, "HTTP 400"):
             await self.callback.post("/v1/deliver", payload)
         target.write_text("original", encoding="utf-8")
-        foreign = self.bridge._store.get_or_create_session("qq:Group:other", "owner", "aiocqhttp")
+        foreign = self.bridge._store.personal_session("qq:GroupMessage:other", "owner", "aiocqhttp",
+                                                       platform_id="qq", is_private=False)
         with self.assertRaisesRegex(BridgeError, "HTTP 400"):
-            await self.callback.post("/v1/deliver", {**payload, "session_id": foreign["session_id"], "delivery_id": "foreign"})
+            await self.callback.post("/v1/deliver", {**payload, "session_id": foreign["session_id"], "agent_id": foreign["agent_id"], "delivery_id": "foreign"})
         self.context.send_message.assert_not_awaited()
 
     async def _fake_pending(self, request):
@@ -316,10 +327,10 @@ class HttpIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.approval_requests.append((request.method, request.path, None))
         return web.json_response({"pending_approvals": [
             {"request_id": "approve-this", "root_session_id": self.sid, "session_id": "child-task-session",
-             "owner_agent_id": "default", "tool_name": "browser", "tool_display_name": "打开网页",
+             "owner_agent_id": self.agent_id, "tool_name": "browser", "tool_display_name": "打开网页",
              "exact_target": "https://example.invalid/task", "reasoning": "private reasoning"},
             {"request_id": "another-agent", "root_session_id": self.sid, "owner_agent_id": "other", "tool_name": "other tool"},
-            {"request_id": "another-session", "root_session_id": "ab_" + "f" * 32, "owner_agent_id": "default", "tool_name": "foreign tool"},
+            {"request_id": "another-session", "root_session_id": "ab_" + "f" * 32, "owner_agent_id": self.agent_id, "tool_name": "foreign tool"},
         ]})
 
     async def _fake_approval(self, request):
@@ -340,11 +351,15 @@ class HttpIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.qwen_requests), 1)
         body = self.qwen_requests[0]
         self.assertEqual((body["session_id"], body["user_id"], body["channel"]), (self.sid, "owner", "astrbot"))
+        self.assertEqual(self.qwen_paths, ["/api/agents/" + self.agent_id + "/console/chat"])
+        self.bridge._personal.ensure_agent.assert_awaited_once_with(self.agent_id, scope="private")
+        self.bridge._personal.model_ready.assert_awaited_once_with(self.agent_id)
         nonce = body["request_context"]["astrbot_bridge_turn_id"]
         self.assertRegex(nonce, r"^[0-9a-f]{32}$")
         self.assertEqual([path for path, _ in self.gateway_requests], ["/v1/tools/list", "/v1/tools/call"])
         for _, callback in self.gateway_requests:
-            self.assertEqual((callback["session_id"], callback["user_id"], callback["turn_id"]), (self.sid, "owner", nonce))
+            self.assertEqual((callback["session_id"], callback["user_id"], callback["turn_id"], callback["agent_id"]),
+                             (self.sid, "owner", nonce, self.agent_id))
         self.assertEqual(len(self.executions), 1)
         _, wrapper, arguments = self.executions[0]
         self.assertIs(wrapper.context.event, event)
@@ -363,10 +378,14 @@ class HttpIntegrationTests(unittest.IsolatedAsyncioTestCase):
         final = SimpleNamespace(object="message", status="completed", type="message", role="assistant",
                                 id="scheduled-job-message", content=[{"type": "text", "text": "主动任务完成"}])
         channel = self.channel_module.AstrBotChannel.from_config(None, self.runtime.profile.channels.astrbot)
+        channel.set_workspace(SimpleNamespace(agent_id=self.agent_id))
+        self.runtime.context.agent_id = None
+        self.runtime.context.channel = None
         await channel.send_event(user_id="owner", session_id=self.sid, event=final)
         await channel.send_event(user_id="owner", session_id=self.sid, event=final)
         # Restart loses the channel RAM cache; actual gateway SQLite still dedupes.
         restarted = self.channel_module.AstrBotChannel.from_config(None, self.runtime.profile.channels.astrbot)
+        restarted.set_workspace(SimpleNamespace(agent_id=self.agent_id))
         await restarted.send_event(user_id="owner", session_id=self.sid, event=final)
         for kind in ["reasoning", "function_call_output"]:
             await restarted.send_event(user_id="owner", session_id=self.sid, event=SimpleNamespace(**{**vars(final), "type": kind}))
@@ -381,7 +400,7 @@ class HttpIntegrationTests(unittest.IsolatedAsyncioTestCase):
     async def test_real_http_replay_and_late_old_turn_are_separate(self):
         nonce = "c" * 32
         event = self._active_turn(nonce)
-        payload = {"session_id": self.sid, "user_id": "owner", "turn_id": nonce,
+        payload = {"session_id": self.sid, "user_id": "owner", "agent_id": self.agent_id, "turn_id": nonce,
                    "call_id": "stable-call", "tool_name": "lookup", "arguments": {"query": "first"}}
         first = await self.callback.post("/v1/tools/call", payload)
         replay = await self.callback.post("/v1/tools/call", payload)
@@ -390,7 +409,7 @@ class HttpIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(self.executions[0][1].context.event, event)
         next_event = self._active_turn("d" * 32)
         for path, old_request in [
-            ("/v1/tools/list", {"session_id": self.sid, "user_id": "owner", "turn_id": nonce}),
+            ("/v1/tools/list", {"session_id": self.sid, "user_id": "owner", "agent_id": self.agent_id, "turn_id": nonce}),
             ("/v1/tools/call", {**payload, "call_id": "late-unexecuted-call"}),
         ]:
             with self.assertRaisesRegex(BridgeError, "HTTP 409"):
@@ -403,7 +422,7 @@ class HttpIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_real_http_auth_route_allowlist_and_schema_fail_closed(self):
         self._active_turn()
-        base = {"session_id": self.sid, "user_id": "owner", "turn_id": "c" * 32,
+        base = {"session_id": self.sid, "user_id": "owner", "agent_id": self.agent_id, "turn_id": "c" * 32,
                 "call_id": "validation-call", "tool_name": "lookup", "arguments": {"query": "ok"}}
         bad_token = BridgeClient(BridgeSettings(self.gateway_url, "wrong", timeout=3, attempts=1))
         with self.assertRaisesRegex(BridgeError, "HTTP 401"):
@@ -420,6 +439,55 @@ class HttpIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 await self.callback.post("/v1/tools/call", {**base, **change})
         self.assertEqual(self.executions, [])
         self.hooks.on_tool_start.assert_not_awaited()
+
+    async def test_missing_and_wrong_agent_rejected_by_every_real_http_callback(self):
+        self._active_turn()
+        common = {"session_id": self.sid, "user_id": "owner", "agent_id": self.agent_id}
+        requests = [
+            ("/v1/tools/list", {**common, "turn_id": "c" * 32}),
+            ("/v1/tools/call", {**common, "turn_id": "c" * 32, "call_id": "agent-bound-call",
+                                "tool_name": "lookup", "arguments": {"query": "allowed"}}),
+            ("/v1/deliver", {**common, "delivery_id": "agent-bound-delivery",
+                             "content": [{"type": "text", "text": "owner-only"}]}),
+        ]
+        other = self.bridge._store.personal_session(
+            "wx:FriendMessage:another", "another", "weixin_oc", "wx", True)
+        for path, payload in requests:
+            missing = dict(payload)
+            missing.pop("agent_id")
+            for invalid in (missing, {**payload, "agent_id": "default"},
+                            {**payload, "agent_id": other["agent_id"]}):
+                with self.subTest(path=path, agent=invalid.get("agent_id")), self.assertRaisesRegex(BridgeError, "HTTP 403"):
+                    await self.callback.post(path, invalid)
+        self.assertEqual(self.executions, [])
+        self.context.send_message.assert_not_awaited()
+        self.hooks.on_tool_start.assert_not_awaited()
+        # Rejected attempts must not reserve the legitimate operation's key.
+        await self.callback.post(*requests[1])
+        self.assertEqual(len(self.executions), 1)
+        await self.callback.post(*requests[2])
+        self.context.send_message.assert_awaited_once()
+
+    async def test_other_person_native_context_cannot_use_owner_route(self):
+        self._active_turn()
+        other = self.bridge._store.personal_session(
+            "wx:FriendMessage:another", "another", "weixin_oc", "wx", True)
+        body = {"session_id": self.sid, "user_id": "owner", "channel": "astrbot",
+                "request_context": {"astrbot_bridge_turn_id": "c" * 32}}
+        await self._bind_runtime(body, agent_id=other["agent_id"])
+        with self.assertRaisesRegex(BridgeError, "HTTP 403"):
+            await self.tools.astrbot_list_tools()
+        self.assertEqual(self.gateway_requests[-1][1]["agent_id"], other["agent_id"])
+        channel = self.channel_module.AstrBotChannel.from_config(None, self.runtime.profile.channels.astrbot)
+        channel.set_workspace(SimpleNamespace(agent_id=other["agent_id"]))
+        final = SimpleNamespace(object="message", status="completed", type="message", role="assistant",
+                                id="foreign-scheduled-message", content=[{"type": "text", "text": "blocked"}])
+        with self.assertRaisesRegex(BridgeError, "HTTP 403"):
+            await channel.send_event(user_id="owner", session_id=self.sid, event=final,
+                                     meta={"agent_id": self.agent_id})
+        self.assertEqual(self.gateway_requests[-1][1]["agent_id"], other["agent_id"])
+        self.context.send_message.assert_not_awaited()
+        self.assertEqual(self.executions, [])
 
     async def test_missing_native_nonce_never_reaches_gateway(self):
         self._active_turn()

@@ -1,0 +1,103 @@
+{
+  "test_only": true,
+  "qwenpaw_version": "2.2.1",
+  "started_at": "2026-10-10T10:24:00.781239+00:00",
+  "network_boundary": "container --network none; loopback API only",
+  "model_calls": 0,
+  "real_accounts_loaded": false,
+  "checks": [
+    "official_agent_create_update_and_owned_workspaces",
+    "native_automatic_memory_cadence_and_recall_configuration_persisted",
+    "model_unconfigured_detected_without_chat",
+    "official_plugin_middleware_registered_and_enforcing_scope",
+    "native_memory_CRUD_and_BM25_recall_do_not_cross_agent_scope",
+    "native_note_correction_and_forget_eventually_synchronize_search_index",
+    "native_restart_keeps_independent_agents_and_notes"
+  ],
+  "limitations": [
+    "No actual model, automatic extraction, QQ/WeChat account or browser navigation is exercised.",
+    "Middleware registration/factory validation is exercised without a model-generated tool call.",
+    "Native file ingestion is asynchronous; successful reindex does not confirm a just-written file is searchable."
+  ],
+  "middleware": [
+    {
+      "plugin": "astrbot-bridge",
+      "priority": 0,
+      "factory": "workspace_guard_factory",
+      "guard": "WorkspaceGuard",
+      "own_path_allowed": true,
+      "denied": [
+        "read_file",
+        "execute_shell_command",
+        "browser",
+        "web_fetch"
+      ]
+    },
+    {
+      "plugin": "astrbot-bridge",
+      "priority": 0,
+      "factory": "workspace_guard_factory",
+      "guard": "WorkspaceGuard",
+      "own_path_allowed": true,
+      "denied": [
+        "read_file",
+        "execute_shell_command",
+        "browser",
+        "web_fetch"
+      ]
+    },
+    {
+      "plugin": "astrbot-bridge",
+      "priority": 0,
+      "factory": "workspace_guard_factory",
+      "guard": "WorkspaceGuard",
+      "own_path_allowed": true,
+      "denied": [
+        "read_file",
+        "execute_shell_command",
+        "browser",
+        "web_fetch"
+      ]
+    }
+  ],
+  "native_index_observations": [
+    {
+      "agent_id": "abp_11111111111111111111111111111111",
+      "query": "orchid741",
+      "present": true,
+      "elapsed_seconds": 6.24
+    },
+    {
+      "agent_id": "abp_22222222222222222222222222222222",
+      "query": "coffee852",
+      "present": true,
+      "elapsed_seconds": 0.01
+    },
+    {
+      "agent_id": "abg_33333333333333333333333333333333",
+      "query": "meeting963",
+      "present": true,
+      "elapsed_seconds": 0.01
+    },
+    {
+      "agent_id": "abp_11111111111111111111111111111111",
+      "query": "peony741",
+      "present": true,
+      "elapsed_seconds": 5.08
+    },
+    {
+      "agent_id": "abp_11111111111111111111111111111111",
+      "query": "orchid741",
+      "present": false,
+      "elapsed_seconds": 0.01
+    },
+    {
+      "agent_id": "abp_11111111111111111111111111111111",
+      "query": "peony741",
+      "present": false,
+      "elapsed_seconds": 4.06
+    }
+  ],
+  "status": "passed",
+  "finished_at": "2026-10-10T10:25:54.470491+00:00"
+}

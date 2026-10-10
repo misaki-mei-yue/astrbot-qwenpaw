@@ -11,6 +11,7 @@ from qwenpaw.app.channels.base import BaseChannel
 
 from .bridge_client import BridgeClient, BridgeError, BridgeSettings, config_value
 from .media import outgoing_content
+from .tools import authorized_agent_id
 
 
 def _value(value: Any) -> Any:
@@ -73,21 +74,45 @@ class AstrBotChannel(BaseChannel):
             "detail": "Outbound bridge configured; platform delivery is verified by AstrBot.",
         }
 
+    def _delivery_agent_id(self) -> str:
+        from qwenpaw.app.agent_context import get_current_channel, peek_current_agent_id
+
+        current = peek_current_agent_id()
+        # Explicit Console requests must not become platform deliveries. A
+        # scheduled dispatch can legitimately have no request ContextVar.
+        if get_current_channel() not in (None, "", "astrbot"):
+            raise BridgeError("This request is not an AstrBot conversation.")
+        workspace = getattr(self, "_workspace", None)
+        if workspace is not None:
+            # ChannelManager.set_workspace injects the real owning workspace
+            # after from_config. Cron uses that same per-Agent manager even
+            # after the Agent request context has been cleaned up.
+            bound = authorized_agent_id(getattr(workspace, "agent_id", None))
+            if current and current != bound:
+                raise BridgeError("The request Agent does not own this AstrBot channel.")
+            return bound
+        # Useful for direct native-context sends; never infer from metadata,
+        # from a workspace path, or from the active/default Agent setting.
+        return authorized_agent_id(current)
+
     async def _deliver(self, session_id, user_id, content, delivery_id):
         if not self.enabled or not content:
             return
         if not session_id or not user_id:
             raise BridgeError("Proactive delivery requires the original session and user.")
+        agent_id = self._delivery_agent_id()
+        acceptance_key = agent_id + ":" + delivery_id
         async with self._send_lock:
-            if delivery_id in self._accepted:
+            if acceptance_key in self._accepted:
                 return
             result = await self._client.post(
                 "/v1/deliver",
-                {"delivery_id": delivery_id, "session_id": session_id, "user_id": user_id, "content": content},
+                {"delivery_id": delivery_id, "session_id": session_id, "user_id": user_id,
+                 "agent_id": agent_id, "content": content},
             )
             # This cache means gateway acceptance, not confirmed platform receipt.
             if result.get("accepted") is True:
-                self._accepted[delivery_id] = None
+                self._accepted[acceptance_key] = None
                 while len(self._accepted) > 2048:
                     self._accepted.popitem(last=False)
             else:
