@@ -199,7 +199,7 @@ async def dispatch(request):
             raise web.HTTPForbidden(text="Use the local portal for updates.")
         return await proxy(request, state, app_name)
     if request.path == "/bundle-update" or request.path.startswith("/bundle-update/"):
-        if request.host != f"localhost:{state["port"]}":
+        if request.host != "localhost:" + str(state["port"]):
             raise web.HTTPForbidden(text="Use the local portal for updates.")
         return await state["updates"].handle(request, state["portal"])
     if request.method not in {"GET", "HEAD"}:

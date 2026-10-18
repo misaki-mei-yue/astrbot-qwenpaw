@@ -28,7 +28,7 @@ class ReleasePackageTests(unittest.TestCase):
         self.root.mkdir()
         self.write("README.md", "Public quick start\n")
         self.write("LICENSE", "Public project license\n")
-        self.write("bundle-version.json", json.dumps({"format": 1, "version": "0.6.0-alpha", "update_protocol": 1, "components": {"astrbot": "4.25.1", "qwenpaw": "2.2.1", "napcat": "4.18.33"}}))
+        self.write("bundle-version.json", json.dumps({"format": 1, "version": release.DEFAULT_VERSION, "update_protocol": 1, "components": {"astrbot": "4.25.1", "qwenpaw": "2.2.1", "napcat": "4.18.33"}}))
         self.output = self.base / "bundle.zip"
 
     def write(self, name, content):
@@ -93,7 +93,7 @@ class ReleasePackageTests(unittest.TestCase):
         self.assertEqual(self.output.read_bytes(), second_output.read_bytes())
         with zipfile.ZipFile(self.output) as archive:
             manifest = json.loads(archive.read(release.MANIFEST_NAME))
-            self.assertEqual(manifest["version"], "0.6.0-alpha")
+            self.assertEqual(manifest["version"], release.DEFAULT_VERSION)
             self.assertEqual(set(archive.namelist()), {item["path"] for item in manifest["files"]} | {release.MANIFEST_NAME})
             for item in manifest["files"]:
                 path = item["path"]

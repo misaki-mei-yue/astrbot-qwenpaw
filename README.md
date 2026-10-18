@@ -2,7 +2,7 @@
 
 让微信和 QQ 中的 AstrBot 使用 QwenPaw 的记忆、任务、文件与浏览器能力，同时保留 AstrBot 的插件生态。
 
-这是独立维护的**社区集成项目**，不是上游团队的官方合并发行版。当前版本 **0.6.0-alpha**，固定适配 AstrBot **4.25.1**、QwenPaw **2.2.1** 与 NapCat **4.18.33**。
+这是独立维护的**社区集成项目**，不是上游团队的官方合并发行版。当前版本 **0.6.1-alpha**，固定适配 AstrBot **4.25.1**、QwenPaw **2.2.1** 与 NapCat **4.18.33**。
 
 ## 它能做什么
 
@@ -26,7 +26,7 @@ flowchart LR
 
 ## 下载
 
-在 [GitHub Releases](https://github.com/misaki-mei-yue/astrbot-qwenpaw/releases) 下载 `astrbot-qwenpaw-0.6.0-alpha.zip`，解压后使用；同页提供 `SHA256SUMS` 校验值。源码包包含启动脚本，不包含上游镜像或任何预设账号。
+在 [GitHub Releases](https://github.com/misaki-mei-yue/astrbot-qwenpaw/releases) 下载 `astrbot-qwenpaw-0.6.1-alpha.zip`，解压后使用；同页提供 `SHA256SUMS` 校验值。源码包包含启动脚本，不包含上游镜像或任何预设账号。
 
 ## Windows 快速开始
 
