@@ -159,6 +159,12 @@ def _prepare_locked(mode: str, root: Path, existing_dir: Path | None = None) -> 
         private_dir(root / suffix)
     if mode == "fresh":
         private_dir(root / "state/astrbot")
+        private_dir(root / "updates/private")
+        ipc = root / "updates/ipc"
+        reject_symlinks(ipc)
+        ipc.mkdir(parents=True, exist_ok=True)
+        ipc.chmod(0o1777)
+        (root / "updates").chmod(0o755)
     private_write(env_path, encoded_env, replace=True)
     if mode == "fresh":
         # AstrBot 4.25.1's OneBot v11 template (aiocqhttp) listens for

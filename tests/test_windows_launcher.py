@@ -49,7 +49,7 @@ class WindowsLauncherTests(unittest.TestCase):
 $script:calls = @(); $script:FailPhase = ''; $script:Endpoint = 'npipe:////./pipe/dockerDesktopLinuxEngine'
 $script:EngineState = 'linux'; $script:engineChecks = 0; $script:FailHealth = $false
 $script:Opened = $false; $script:Healthy = $false; $script:DesktopStarted = $false
-$script:QwenReady = $false; $script:FailQwenReady = $false
+$script:QwenReady = $false; $script:FailQwenReady = $false; $script:RestoreSourceOnHelper = $false
 function Get-BundleDockerPath { return 'fake-docker' }
 function Find-BundlePython { return [pscustomobject]@{File='fake-python';Prefix=@('-3')} }
 function Get-BundleDesktopPath { return 'installed-desktop-fixture' }
@@ -71,7 +71,15 @@ function Invoke-BundleCommand {
             $output='linux'
         } else { $output=$script:EngineState }
     }
-    elseif ($File -eq 'fake-python') {
+    elseif ($File -eq 'fake-python' -and $Phase -eq 'Starting bundle update helper' -and $script:RestoreSourceOnHelper) {
+        $at=[Array]::IndexOf($Arguments, '--root'); $sourceRoot=$Arguments[$at+1]
+        $deploy=Join-Path $sourceRoot 'deploy'
+        $null=[IO.Directory]::CreateDirectory($deploy)
+        [IO.File]::WriteAllText((Join-Path $deploy 'compose.bundle.yaml'), "services: {}`n")
+        [IO.File]::WriteAllText((Join-Path $deploy 'prepare.py'), "# restored prepare fixture only`n")
+        [IO.File]::WriteAllText((Join-Path $deploy 'bootstrap_qwenpaw.py'), "# restored bootstrap fixture only`n")
+    }
+    elseif ($File -eq 'fake-python' -and $Phase -eq 'Preparing bundle configuration') {
         $at=[Array]::IndexOf($Arguments, '--root'); $destination=$Arguments[$at+1]
         $null=[IO.Directory]::CreateDirectory($destination)
         $marker=Join-Path $destination '.combined-setup.json'
@@ -158,6 +166,21 @@ function Open-BundlePage {
         self.assertFalse(any("build" in call["args"] or "up" in call["args"] for call in result["calls"]))
         self.assertNotIn("private-secret-from-native-output", output)
         self.assertNotIn("another-private-secret", output)
+
+    def test_update_helper_start_failure_never_pulls_builds_or_starts_services(self):
+        runtime = self.prepared()
+        before = {name: (runtime / name).read_bytes() for name in (".env", "saved-login.db")}
+        result, output = self.run_ps(self.start_body("$script:FailPhase='Starting bundle update helper'"))
+        self.assertIn("Starting bundle update helper failed", result["error"])
+        helper = next(call for call in result["calls"] if call["phase"] == "Starting bundle update helper")
+        self.assertEqual(helper["file"], "fake-python")
+        self.assertIn("--ensure", helper["args"])
+        self.assertFalse(any("compose" in call["args"] and any(action in call["args"] for action in ("pull", "build", "up")) for call in result["calls"]))
+        self.assertFalse(result["opened"])
+        self.assertNotIn("private-secret-from-native-output", output)
+        self.assertNotIn("another-private-secret", output)
+        for name, value in before.items():
+            self.assertEqual((runtime / name).read_bytes(), value)
 
     def test_config_failure_stops_before_build_and_keeps_existing_data(self):
         runtime = self.prepared()
@@ -281,10 +304,83 @@ function Open-BundlePage {
         result, _ = self.run_ps(body)
         commands = [call for call in result["calls"] if "--project-name" in call["args"]]
         self.assertEqual([call["args"][-1] for call in commands], ["--quiet", "stop"])
-        self.assertFalse(any(call["file"] == "fake-python" for call in result["calls"]))
+        self.assertTrue(any(call["file"] == "fake-python" and "--stop" in call["args"] for call in result["calls"]))
         self.assertFalse(result["desktop"])
         for name, data in before.items():
             self.assertEqual((runtime / name).read_bytes(), data)
+
+    def test_update_helper_stop_failure_never_stops_compose_services(self):
+        runtime = self.prepared()
+        before = {name: (runtime / name).read_bytes() for name in (".env", "saved-login.db")}
+        body = "$script:FailPhase='Stopping bundle update helper'; $errorText=''; try { Invoke-BundleStop -ProjectRoot " + ps_string(self.package) + r''' } catch { $errorText=$_.Exception.Message }
+[Console]::WriteLine('RESULT:' + (ConvertTo-Json @{error=$errorText;calls=@($script:calls)} -Depth 8 -Compress))
+'''
+        result, output = self.run_ps(body)
+        self.assertIn("Stopping bundle update helper failed", result["error"])
+        helper = next(call for call in result["calls"] if call["phase"] == "Stopping bundle update helper")
+        self.assertEqual(helper["file"], "fake-python")
+        self.assertIn("--stop", helper["args"])
+        self.assertFalse(any("compose" in call["args"] and any(action in call["args"] for action in ("stop", "down")) for call in result["calls"]))
+        self.assertNotIn("private-secret-from-native-output", output)
+        self.assertNotIn("another-private-secret", output)
+        for name, value in before.items():
+            self.assertEqual((runtime / name).read_bytes(), value)
+
+    def test_start_and_stop_prefer_private_stable_updater_entry(self):
+        runtime = self.prepared()
+        stable = runtime / "updates/private/host-entry.py"
+        stable.parent.mkdir(parents=True)
+        stable.write_text("# private stable launcher fixture; never executed\n", encoding="utf-8")
+        source = self.package / "scripts/run_bundle_updater.py"
+        source.parent.mkdir()
+        source.write_text("raise AssertionError('source updater must not be invoked')\n", encoding="utf-8")
+        before = {name: (runtime / name).read_bytes() for name in (".env", "saved-login.db")}
+        entry_before = stable.read_bytes()
+        source_before = source.read_bytes()
+        result, _ = self.run_ps(self.start_body())
+        self.assertEqual(result["error"], "")
+        helper = next(call for call in result["calls"] if call["phase"] == "Starting bundle update helper")
+        self.assertEqual(helper["args"][:2], ["-3", str(stable)])
+        self.assertIn("--ensure", helper["args"])
+        self.assertFalse(any(str(source) in call["args"] for call in result["calls"]))
+        body = "Invoke-BundleStop -ProjectRoot " + ps_string(self.package) + r'''
+[Console]::WriteLine('RESULT:' + (ConvertTo-Json @{calls=@($script:calls)} -Depth 8 -Compress))
+'''
+        result, _ = self.run_ps(body)
+        helper = next(call for call in result["calls"] if call["phase"] == "Stopping bundle update helper")
+        self.assertEqual(helper["args"][:2], ["-3", str(stable)])
+        self.assertIn("--stop", helper["args"])
+        self.assertFalse(any(str(source) in call["args"] for call in result["calls"]))
+        self.assertEqual(stable.read_bytes(), entry_before)
+        self.assertEqual(source.read_bytes(), source_before)
+        for name, value in before.items():
+            self.assertEqual((runtime / name).read_bytes(), value)
+
+    def test_private_stable_helper_recovers_missing_live_sources_before_start(self):
+        runtime = self.prepared()
+        stable = runtime / "updates/private/host-entry.py"
+        stable.parent.mkdir(parents=True)
+        stable.write_text("# stable recovery fixture; external process is mocked\n", encoding="utf-8")
+        before = {name: (runtime / name).read_bytes() for name in (".env", ".combined-setup.json", "saved-login.db")}
+        missing = [self.package / "deploy" / name for name in ("compose.bundle.yaml", "prepare.py", "bootstrap_qwenpaw.py")]
+        for item in missing:
+            item.unlink()
+        result, _ = self.run_ps(self.start_body("$script:RestoreSourceOnHelper=$true"))
+        self.assertEqual(result["error"], "")
+        self.assertTrue(result["opened"])
+        calls = result["calls"]
+        helper_index = next(index for index, call in enumerate(calls) if call["phase"] == "Starting bundle update helper")
+        prepare_index = next(index for index, call in enumerate(calls) if call["phase"] == "Preparing bundle configuration")
+        bootstrap_index = next(index for index, call in enumerate(calls) if call["phase"] == "Setting up QwenPaw bridge")
+        self.assertEqual(calls[helper_index]["args"][:2], ["-3", str(stable)])
+        self.assertIn("--ensure", calls[helper_index]["args"])
+        self.assertLess(helper_index, prepare_index)
+        self.assertLess(helper_index, bootstrap_index)
+        self.assertEqual(sum(call["phase"] == "Starting bundle update helper" for call in calls), 1)
+        self.assertEqual(calls[bootstrap_index]["inputLength"], len("# restored bootstrap fixture only\n"))
+        self.assertTrue(all(item.is_file() for item in missing))
+        for name, value in before.items():
+            self.assertEqual((runtime / name).read_bytes(), value)
 
     def test_stop_unprepared_package_runs_no_process(self):
         body = "$errorText=''; try { Invoke-BundleStop -ProjectRoot " + ps_string(self.package) + r''' } catch { $errorText=$_.Exception.Message }

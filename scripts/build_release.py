@@ -22,17 +22,17 @@ from typing import Iterable
 import zipfile
 
 
-DEFAULT_VERSION = "0.5.0-alpha"
+DEFAULT_VERSION = "0.6.0-alpha"
 MANIFEST_NAME = "RELEASE-MANIFEST.json"
 PUBLIC_ROOT_FILES = frozenset({
     ".dockerignore", ".env.example", ".gitattributes", ".gitignore",
     "CHANGELOG.md", "CONTRIBUTING.md", "COPYRIGHT.md", "LICENSE", "README.md", "SECURITY.md",
     "THIRD_PARTY_NOTICES.md", "requirements-dev.txt", "start.cmd", "start.ps1",
-    "stop.cmd", "stop.ps1",
+    "stop.cmd", "stop.ps1", "bundle-version.json",
 })
 PUBLIC_DIRECTORIES = frozenset({
     ".github", "astrbot_plugin_qwenpaw_bridge", "qwenpaw_plugin_astrbot_bridge",
-    "bundle_gateway", "deploy", "docs", "licenses", "scripts", "tests",
+    "bundle_gateway", "bundle_updater", "deploy", "docs", "licenses", "scripts", "tests",
 })
 # These reports describe public component compatibility. Site-specific migration
 # receipts and diagnostic dumps are intentionally not accepted.
@@ -222,6 +222,12 @@ def build_release(root: Path, output: Path, version: str = DEFAULT_VERSION,
     if not output.parent.is_dir() or _is_link(output.parent):
         raise ReleaseError("The output directory must exist and must not be a link")
     sources = collect_public_sources(root, private_patterns)
+    by_name = dict(sources)
+    if "bundle-version.json" not in by_name:
+        raise ReleaseError("A release requires bundle-version.json")
+    version_metadata = json.loads(by_name["bundle-version.json"])
+    if version_metadata.get("version") != version or version_metadata.get("update_protocol") != 1:
+        raise ReleaseError("Release version and updater metadata must match")
     manifest = {
         "format": 1,
         "version": version,

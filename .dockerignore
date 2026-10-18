@@ -1,5 +1,9 @@
 *
 !bundle_gateway/
 !bundle_gateway/**
+!bundle_updater/
+!bundle_updater/__init__.py
+!bundle_updater/common.py
+!bundle-version.json
 bundle_gateway/**/__pycache__/
 bundle_gateway/**/*.pyc

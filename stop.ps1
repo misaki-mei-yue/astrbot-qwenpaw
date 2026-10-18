@@ -13,6 +13,10 @@ function Invoke-BundleStop {
     if ((Get-BundleEngineState $docker $context) -ne 'linux') {
         throw 'The local Linux Docker engine is not running. Nothing was stopped.'
     }
+    $python = Find-BundlePython
+    $updateScript = Get-BundleUpdaterScript $paths
+    Assert-BundleNoLinks $updateScript
+    $null = Invoke-BundleChecked $python.File ($python.Prefix + @($updateScript, "--stop", "--root", $paths.Root, "--project", $paths.Project, "--context", $context)) "Stopping bundle update helper" 30
     $compose = Get-BundleComposeArguments $paths $context
     $null = Invoke-BundleChecked $docker ($compose + @('config', '--quiet')) 'Validating bundle configuration'
     $null = Invoke-BundleChecked $docker ($compose + @('stop')) 'Stopping this bundle' 120

@@ -15,7 +15,7 @@
       <button role="tab" id="tab-qwenpaw" aria-controls="panel-qwenpaw" aria-selected="false" tabindex="-1" data-app="qwenpaw"><span class="label">记忆与任务</span><span class="product">QwenPaw</span><span class="dot" aria-hidden="true"></span></button>
       <button role="tab" id="tab-napcat" aria-controls="panel-napcat" aria-selected="false" tabindex="-1" data-app="napcat"><span class="label">QQ 登录</span><span class="product">NapCat</span><span class="dot" aria-hidden="true"></span></button>
     </nav>
-    <div class="rail-footer"><button id="help-toggle" aria-expanded="false" aria-controls="help">初次使用</button><span>一个入口，三套原生页面</span></div>
+    <div class="rail-footer"><button id="update-toggle" aria-haspopup="dialog"><span aria-hidden="true">↻</span> <span id="update-label">检查更新</span><span id="update-current"></span></button><button id="help-toggle" aria-expanded="false" aria-controls="help">初次使用</button><span>一个入口，三套原生页面</span></div>
   </aside>
   <main>
     <header><div><h1 id="page-title">聊天与插件</h1><p id="status" role="status">正在连接本地服务…</p></div><div class="page-actions"><a id="open-native" target="_blank" rel="noopener noreferrer">独立打开</a><button id="refresh">重新加载当前页面</button></div></header>
@@ -29,5 +29,19 @@
     <section class="native" role="tabpanel" id="panel-qwenpaw" aria-labelledby="tab-qwenpaw" hidden><iframe title="QwenPaw 原生后台" referrerpolicy="same-origin" allow="microphone; clipboard-read; clipboard-write"></iframe></section>
     <section class="native" role="tabpanel" id="panel-napcat" aria-labelledby="tab-napcat" hidden><iframe title="NapCat QQ 登录" referrerpolicy="same-origin" allow="publickey-credentials-get; publickey-credentials-create; clipboard-read; clipboard-write"></iframe></section>
   </main>
+  <dialog id="update-dialog" aria-labelledby="update-title" aria-describedby="update-description">
+    <div class="update-heading"><h2 id="update-title">更新组合包</h2><button id="update-close" aria-label="关闭更新窗口" autofocus>×</button></div>
+    <p id="update-description">检查经过适配的组合包新版本，保留你的配置、聊天和记忆。</p>
+    <dl class="update-versions"><div><dt>当前版本</dt><dd id="update-version">正在读取…</dd></div><div id="update-target-row" hidden><dt>可用版本</dt><dd id="update-target"></dd></div></dl>
+    <div id="update-status" role="status" aria-live="polite" aria-atomic="true"><p id="update-message">正在连接更新服务…</p><p id="update-step" hidden></p></div>
+    <progress id="update-progress" max="100" aria-label="更新进度" hidden></progress>
+    <section id="update-candidate" aria-label="新版本内容" hidden>
+      <dl class="update-components"><div><dt>AstrBot</dt><dd id="update-astrbot"></dd></div><div><dt>QwenPaw</dt><dd id="update-qwenpaw"></dd></div><div><dt>NapCat</dt><dd id="update-napcat"></dd></div></dl>
+      <h3>更新内容</h3><p id="update-notes"></p><a id="update-release" target="_blank" rel="noopener noreferrer" hidden>查看完整发布说明</a>
+      <p id="update-warning">更新前会备份配置与个人数据。服务会短暂重启，完成后自动重连；建议先保存后台中尚未提交的设置。请先结束进行中的任务并暂停定时任务。升级会短暂中断聊天。</p>
+    </section>
+    <p id="update-error" role="alert" hidden></p>
+    <div class="update-actions"><button id="update-check">检查更新</button><button id="update-apply" class="primary" hidden>备份并更新</button><button id="update-reload" class="primary" hidden>刷新界面</button></div>
+  </dialog>
 </body>
 </html>

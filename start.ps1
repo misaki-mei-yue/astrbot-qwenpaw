@@ -117,7 +117,7 @@ function Assert-BundleNoLinks {
 }
 
 function Get-BundlePaths {
-    param([string]$ProjectRoot)
+    param([string]$ProjectRoot, [switch]$AllowIncomplete)
     Assert-BundleNoLinks $ProjectRoot
     $root = Get-Item -LiteralPath $ProjectRoot -Force
     if (-not $root.PSIsContainer) { throw 'Package directory is unavailable.' }
@@ -130,7 +130,7 @@ function Get-BundlePaths {
     $prepare = Join-Path $source 'deploy\prepare.py'
     foreach ($path in @($compose, $prepare)) {
         Assert-BundleNoLinks $path
-        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+        if (-not $AllowIncomplete -and -not (Test-Path -LiteralPath $path -PathType Leaf)) {
             throw 'This package is incomplete. Download or extract the complete release again.'
         }
     }
@@ -330,19 +330,52 @@ function Open-BundlePage {
     Start-Process -FilePath 'http://localhost:18080/' | Out-Null
 }
 
+function Get-BundleUpdaterScript {
+    param($Paths)
+    $stable = Join-Path $Paths.Runtime "updates\private\host-entry.py"
+    Assert-BundleNoLinks $stable
+    if (Test-Path -LiteralPath $stable -PathType Leaf) { return $stable }
+    $source = Join-Path $Paths.Root "scripts\run_bundle_updater.py"
+    Assert-BundleNoLinks $source
+    return $source
+}
+
 function Invoke-BundleStart {
     param([string]$ProjectRoot, [switch]$NoBrowser, [switch]$BuildQwenPaw, [int]$ReadyTimeoutSeconds = 600)
-    $paths = Get-BundlePaths $ProjectRoot
+    $paths = Get-BundlePaths $ProjectRoot -AllowIncomplete
     Assert-BundleRuntime $paths
-    $bootstrap = Get-BundleBootstrapScript $paths.Root
+    $updateScript = Get-BundleUpdaterScript $paths
+    $stableEntry = Join-Path $paths.Runtime "updates\private\host-entry.py"
+    $hasStableUpdater = Test-Path -LiteralPath $stableEntry -PathType Leaf
+    if (-not $hasStableUpdater) {
+        $paths = Get-BundlePaths $ProjectRoot
+        $bootstrap = Get-BundleBootstrapScript $paths.Root
+    }
     $docker = Get-BundleDockerPath
     $context = Get-BundleLocalContext $docker
     $python = Find-BundlePython
     Wait-BundleEngine $docker $context
     $null = Invoke-BundleChecked $docker @('--context', $context, 'compose', 'version') 'Checking Docker Compose'
+    if ($hasStableUpdater) {
+        # Recover with the private stable helper before importing or executing any
+        # live source that may have been only partly installed before a restart.
+        $recoveryArgs = @($updateScript, "--ensure", "--root", $paths.Root, "--project", $paths.Project, "--context", $context)
+        if ($BuildQwenPaw) { $recoveryArgs += "--build-qwenpaw" }
+        $null = Invoke-BundleChecked $python.File ($python.Prefix + $recoveryArgs) "Starting bundle update helper" 900
+        $paths = Get-BundlePaths $ProjectRoot
+        $bootstrap = Get-BundleBootstrapScript $paths.Root
+    }
     Write-Host 'Preparing private configuration; existing credentials and data are preserved...'
     $null = Invoke-BundleChecked $python.File ($python.Prefix + @($paths.Prepare, '--mode', 'fresh', '--root', $paths.Runtime)) 'Preparing bundle configuration'
     Assert-BundleRuntime $paths -RequirePrepared
+    $updateScript = Get-BundleUpdaterScript $paths
+    Assert-BundleNoLinks $updateScript
+    $updateArgs = @($updateScript, "--ensure", "--root", $paths.Root, "--project", $paths.Project, "--context", $context)
+    if ($BuildQwenPaw) { $updateArgs += "--build-qwenpaw" }
+    Write-Host "Starting the local update helper and checking unfinished recovery..."
+    if (-not $hasStableUpdater) {
+        $null = Invoke-BundleChecked $python.File ($python.Prefix + $updateArgs) "Starting bundle update helper" 900
+    }
     $compose = Get-BundleComposeArguments $paths $context
     $buildServices = @('gateway')
     if ($BuildQwenPaw) {

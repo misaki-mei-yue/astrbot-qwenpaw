@@ -2,7 +2,7 @@
 
 让微信和 QQ 中的 AstrBot 使用 QwenPaw 的记忆、任务、文件与浏览器能力，同时保留 AstrBot 的插件生态。
 
-这是独立维护的**社区集成项目**，不是上游团队的官方合并发行版。当前版本 **0.5.0-alpha**，固定适配 AstrBot **4.25.1**、QwenPaw **2.2.1** 与 NapCat **4.18.33**。
+这是独立维护的**社区集成项目**，不是上游团队的官方合并发行版。当前版本 **0.6.0-alpha**，固定适配 AstrBot **4.25.1**、QwenPaw **2.2.1** 与 NapCat **4.18.33**。
 
 ## 它能做什么
 
@@ -26,7 +26,7 @@ flowchart LR
 
 ## 下载
 
-在 [GitHub Releases](https://github.com/misaki-mei-yue/astrbot-qwenpaw/releases) 下载 `astrbot-qwenpaw-0.5.0-alpha.zip`，解压后使用；同页提供 `SHA256SUMS` 校验值。源码包包含启动脚本，不包含上游镜像或任何预设账号。
+在 [GitHub Releases](https://github.com/misaki-mei-yue/astrbot-qwenpaw/releases) 下载 `astrbot-qwenpaw-0.6.0-alpha.zip`，解压后使用；同页提供 `SHA256SUMS` 校验值。源码包包含启动脚本，不包含上游镜像或任何预设账号。
 
 ## Windows 快速开始
 
@@ -41,6 +41,12 @@ flowchart LR
 以后双击 `start.cmd` 启动，双击 `stop.cmd` 停止本项目，保留配置与数据。详见 [Windows 说明](docs/windows.md)、[QQ 接入](docs/qq.md)和 [QwenPaw 配置](docs/qwenpaw.md)。
 
 默认拉取固定版本镜像，只构建轻量入口服务。需要从固定源码构建 QwenPaw 时，显式运行 `start.cmd -BuildQwenPaw`；它不是默认步骤，也不构建 NapCat 源码。
+
+## 网页更新
+
+通过新版 `start.cmd` 启动后，左下角的 **检查更新** 可以检查本项目发布的兼容组合版本。查看版本与说明，再点 **备份并更新**；本机执行器会校验下载、停止服务、备份数据并更新，检查未通过时尝试恢复旧程序、镜像和数据。
+
+更新时会短暂中断聊天；页面会显示状态并重新连接。备份和下载保存在安装目录 `runtime/updates/private`，请预留足够磁盘空间。更新不会自动追随三个上游的 `latest`；有本地代码修改、源码构建模式或恢复未完成时会拒绝自动应用。网页自动应用需使用完整 Release 包；源码克隆可运行和检查版本，升级需手动处理。详见[更新与恢复](docs/updates.md)。
 
 ## 第一次使用记忆
 

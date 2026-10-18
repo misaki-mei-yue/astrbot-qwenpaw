@@ -126,6 +126,9 @@ services:
       QWENPAW_RUNTIME_INTERNAL_TOKEN: ${QWENPAW_RUNTIME_INTERNAL_TOKEN:?}
       QWENPAW_AGENT_ID: ${QWENPAW_AGENT_ID:-default}
       BUNDLE_PORT: '18080'
+      BUNDLE_UPDATE_IPC: /bundle-updates
+    volumes:
+    - ${INSTALL_ROOT:?}/updates/ipc:/bundle-updates
     ports:
     - 127.0.0.1:18080:18080
     networks:
