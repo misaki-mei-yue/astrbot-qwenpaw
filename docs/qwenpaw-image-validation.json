@@ -1,0 +1,94 @@
+{
+  "verified_at_utc": "2026-10-10T06:13:14Z",
+  "upstream_version": "2.2.1",
+  "upstream_tag": "v2.2.1",
+  "upstream_commit": "cae5773707b26ab2fd00903f84b712387894b256",
+  "official_repository": "https://github.com/agentscope-ai/QwenPaw",
+  "official_release": "https://github.com/agentscope-ai/QwenPaw/releases/tag/v2.2.1",
+  "official_build": "https://github.com/agentscope-ai/QwenPaw/actions/runs/34558367996",
+  "index_digest": "sha256:4127130c41f415434aca5a9ea8eada99d3185d99e2bf181bd95c6e7fb959a3a7",
+  "default_image": "agentscope-registry.ap-southeast-1.cr.aliyuncs.com/agentscope/qwenpaw@sha256:4127130c41f415434aca5a9ea8eada99d3185d99e2bf181bd95c6e7fb959a3a7",
+  "dockerhub_image": "agentscope/qwenpaw@sha256:4127130c41f415434aca5a9ea8eada99d3185d99e2bf181bd95c6e7fb959a3a7",
+  "registries": [
+    {
+      "name": "official ACR",
+      "manifest_url": "https://agentscope-registry.ap-southeast-1.cr.aliyuncs.com/v2/agentscope/qwenpaw/manifests/v2.2.1",
+      "status": 200,
+      "docker_content_digest": "sha256:4127130c41f415434aca5a9ea8eada99d3185d99e2bf181bd95c6e7fb959a3a7"
+    },
+    {
+      "name": "official Docker Hub",
+      "manifest_url": "https://registry-1.docker.io/v2/agentscope/qwenpaw/manifests/v2.2.1",
+      "tag_metadata_url": "https://hub.docker.com/v2/repositories/agentscope/qwenpaw/tags/v2.2.1",
+      "status": 200,
+      "docker_content_digest": "sha256:4127130c41f415434aca5a9ea8eada99d3185d99e2bf181bd95c6e7fb959a3a7",
+      "tag_last_updated": "2026-09-11T04:18:42.600247Z"
+    }
+  ],
+  "platforms": [
+    {
+      "os": "linux",
+      "architecture": "amd64",
+      "manifest_digest": "sha256:1987eed11fbcd5d594f219ff34156e81fb7dee6120117f5ce0f647837ef5a31b",
+      "compressed_layer_bytes": 993150015.0
+    },
+    {
+      "os": "linux",
+      "architecture": "arm64",
+      "manifest_digest": "sha256:9ea8531d57c7f6b117c2f9854750099b9616b1b82ce969c35b5a15da13595967",
+      "compressed_layer_bytes": 961900312.0
+    }
+  ],
+  "provenance": {
+    "source_url": "https://registry-1.docker.io/v2/agentscope/qwenpaw/blobs/sha256:7e78286c04daea29b4bbfc35509f2e03069853ef80d1f9f5a798698b5acd6d78",
+    "blob_digest": "sha256:7e78286c04daea29b4bbfc35509f2e03069853ef80d1f9f5a798698b5acd6d78",
+    "attestation_manifest_digest": "sha256:92e73f28e5e6f22ef218c99f2542749c74a2eacdfe7d9aaa030dd24b493c5d98",
+    "predicateType": "https://slsa.dev/provenance/v1",
+    "predicate": {
+      "buildDefinition": {
+        "externalParameters": {
+          "request": {
+            "root": {
+              "request": {
+                "args": {
+                  "vcs:revision": "cae5773707b26ab2fd00903f84b712387894b256",
+                  "vcs:source": "https://github.com/agentscope-ai/QwenPaw"
+                }
+              }
+            }
+          }
+        },
+        "internalParameters": {
+          "github_workflow_sha": "cae5773707b26ab2fd00903f84b712387894b256",
+          "github_workflow": "Release (unified)",
+          "github_job": "build-docker",
+          "github_run_id": "34558367996",
+          "github_ref": "refs/heads/release/v2.2.1"
+        }
+      },
+      "runDetails": {
+        "metadata": {
+          "buildkit_metadata": {
+            "vcs": {
+              "revision": "cae5773707b26ab2fd00903f84b712387894b256",
+              "source": "https://github.com/agentscope-ai/QwenPaw"
+            }
+          }
+        }
+      }
+    }
+  },
+  "checks": {
+    "acr_anonymous_manifest_read": true,
+    "dockerhub_manifest_read": true,
+    "identical_registry_index_digest": true,
+    "acr_index_bytes_sha256": "sha256:4127130c41f415434aca5a9ea8eada99d3185d99e2bf181bd95c6e7fb959a3a7",
+    "dockerhub_index_bytes_sha256": "sha256:4127130c41f415434aca5a9ea8eada99d3185d99e2bf181bd95c6e7fb959a3a7",
+    "amd64_slsa_source_commit_matches": true
+  },
+  "boundaries": [
+    "Registry metadata reads only; no image pull, build, or container startup was performed by this verification.",
+    "The amd64 build provenance matches the fixed source commit; it is not an independent cryptographic signature or an in-container source-byte comparison.",
+    "This record does not verify real model requests, WeChat/QQ logins, or message delivery."
+  ]
+}

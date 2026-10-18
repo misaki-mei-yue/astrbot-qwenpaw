@@ -1,0 +1,16 @@
+{
+  "date": "2026-10-18",
+  "root_cause": "Native automatic memory retrieval injects a simulated assistant tool turn without model-generated reasoning; the official DeepSeek Responses thinking API rejects that request with missing reasoning_text (HTTP 400).",
+  "fix": "At the bridge WorkspaceGuard model boundary, represent only native metadata-proven simulated memory retrieval as ordinary external reference evidence. Preserve every retrieved text result verbatim; keep genuine reasoning and tool turns unchanged.",
+  "scope": "Bridge-managed agents using a DeepSeek model, the exact api.deepseek.com host, and the native Responses formatter; other providers and formatter types are unchanged.",
+  "persisted_history_changed_by_compatibility_fix": false,
+  "thinking_disabled": false,
+  "raw_reasoning_metadata_removed": false,
+  "automatic_retry_added": false,
+  "native_linux_tests": {
+    "workspace_guard": 34,
+    "memory_protocol": 8,
+    "all_passed": true
+  },
+  "validation_scope": "Native Linux regression tests validate the bridge-managed model boundary. No personal conversation, persona, account, workspace, or diagnostic payload is included in this record."
+}

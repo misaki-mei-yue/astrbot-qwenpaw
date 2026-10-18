@@ -1,0 +1,9 @@
+# Optional source build for the local bundle, explicitly selected by start.ps1.
+# Keep every environment variable, volume and network from compose.bundle.yaml.
+services:
+  qwenpaw:
+    image: bot-combined/qwenpaw:2.2.1-local
+    pull_policy: never
+    build:
+      context: https://github.com/agentscope-ai/QwenPaw.git#cae5773707b26ab2fd00903f84b712387894b256
+      dockerfile: deploy/Dockerfile

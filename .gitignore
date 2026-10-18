@@ -1,0 +1,23 @@
+# Never commit runtime accounts, model keys, conversations or browser profiles.
+.env
+.env.*
+!.env.example
+runtime/
+data/
+working/
+working.secret/
+working.backups/
+bridge-files/
+*.sqlite*
+*.db
+*.tar.gz
+*.zip
+*.log
+.venv/
+.test-deps/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+coverage.xml
+research/

@@ -1,0 +1,10 @@
+{
+    admin off
+    auto_https off
+}
+
+:8088 {
+    reverse_proxy qwenpaw:8088 {
+        header_up X-QwenPaw-Runtime-Token {$QWENPAW_RUNTIME_INTERNAL_TOKEN}
+    }
+}

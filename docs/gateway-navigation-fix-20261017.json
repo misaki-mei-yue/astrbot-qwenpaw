@@ -1,0 +1,13 @@
+{
+  "date": "2026-10-17",
+  "problem": "NapCat embedded navigation reported Sec-Fetch-Dest=empty and Sec-Fetch-Mode=navigate; prior gateway returned 403",
+  "fix": "Accept GET/HEAD native-page empty-destination navigation only in navigate mode; retain exact Host/Origin validation and deny cross-site API fetch and POST",
+  "tests": {
+    "gateway_tests": 15,
+    "passed": 15,
+    "real_browser": "NapCat Web Login token input and login button visibly rendered inside local portal"
+  },
+  "model_calls": 0,
+  "source_sha256": "d938e22e73feefab643fd2110b19d12a054926847ae8d43f75a5998f26211a18",
+  "validation_scope": "Gateway regression tests and a native login-page rendering check; no account or runtime identity is included."
+}

@@ -1,0 +1,72 @@
+name: Source release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to package (without the v prefix)'
+        required: true
+        default: '0.5.0-alpha'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.package.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install test dependencies
+        run: python -m pip install -r requirements-dev.txt
+      - name: Check the source and publication gate
+        run: python -m unittest discover -s tests -v
+      - name: Build the source-only package
+        id: package
+        env:
+          DISPATCH_VERSION: ${{ inputs.version }}
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            VERSION="${GITHUB_REF#refs/tags/v}"
+          else
+            VERSION="$DISPATCH_VERSION"
+          fi
+          mkdir -p dist
+          python scripts/build_release.py --root . --version "$VERSION" --output "dist/astrbot-qwenpaw-$VERSION.zip"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          (cd dist && sha256sum "astrbot-qwenpaw-$VERSION.zip" > SHA256SUMS)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: source-release
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: source-release
+          path: dist
+      - name: Publish the tagged release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          ARGS=()
+          if [[ "$RELEASE_VERSION" == *-* ]]; then
+            ARGS+=(--prerelease)
+          fi
+          gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --title "AstrBot × QwenPaw $RELEASE_VERSION" --generate-notes "${ARGS[@]}"

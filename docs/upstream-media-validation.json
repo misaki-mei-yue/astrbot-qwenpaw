@@ -1,0 +1,50 @@
+{
+  "python": "3.12.14",
+  "agentscope": "2.0.7.post1",
+  "agentscope_wheel_sha256": "3fffeb2b6e124c45d7c95a019afc4de73ed6c2a02880804da5b43a61634cc063",
+  "qwenpaw_commit": "cae5773707b26ab2fd00903f84b712387894b256",
+  "qwenpaw_commit_verified_by_git": true,
+  "qwen_source_hashes": {
+    "schemas.py": "203a2451761d007ecb4b8b0b7f8503e78a5c8dd6dd0109dbc41a964f27d8d6fb",
+    "app/channels/renderer.py": "dc48b9528eb23dfb7146e24fe10ea41dbeb4be4fbb15aa0c91e0c2fb37da66c8",
+    "runtime/envelope.py": "9fd965f801ce2a4e54a1dd2cd538ce0c6671651537842142d19328c88b865c06",
+    "runtime/message_convert.py": "35f570721ac2cbfda566774702e69796b532bbf6542ed56b583c6158641f73d1"
+  },
+  "qwen_source_hash_format": "SHA256 with CRLF normalized to LF; all other bytes preserved",
+  "checked": [
+    {
+      "kind": "file",
+      "source_type": "data",
+      "envelope_inner_type": "data",
+      "output_field": "file_url",
+      "file_url_preserved": true
+    },
+    {
+      "kind": "image",
+      "source_type": "data",
+      "envelope_inner_type": "image",
+      "output_field": "image_url",
+      "file_url_preserved": true
+    },
+    {
+      "kind": "video",
+      "source_type": "data",
+      "envelope_inner_type": "video",
+      "output_field": "video_url",
+      "file_url_preserved": true
+    },
+    {
+      "kind": "audio",
+      "source_type": "data",
+      "envelope_inner_type": "audio",
+      "output_field": "data",
+      "file_url_preserved": true
+    }
+  ],
+  "toolchunk_roundtrips": 4,
+  "renderer_cases": 8,
+  "native_content_roundtrips": 4,
+  "envelope_to_collector_cases": 4,
+  "bridge_core_sha256": "4c7ddc179ba19af867580ee32eefaf6e70f13439727a8b8ec757b68f21ac205d",
+  "scope": "Real AgentScope event/schema classes, unchanged ToolChunk module, Qwen schemas/renderer/Envelope and bridge AssistantCollector. AgentScope tool/model and Qwen package initializers replaced with namespace packages; model.FinishedReason forwards the genuine enum from model._model_response. No fake classes. Not a full app/runtime, model, browser, QQ or WeChat integration test."
+}
