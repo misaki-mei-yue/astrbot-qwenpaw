@@ -87,3 +87,5 @@ python -m unittest discover -s tests -v
 [AstrBot](https://github.com/AstrBotDevs/AstrBot)、[QwenPaw](https://github.com/agentscope-ai/QwenPaw)、[NapCatQQ](https://github.com/NapNeko/NapCatQQ) 及其镜像、依赖保留各自许可。特别是 **NapCat 4.18.33 使用有限再分发及非商业许可，不能把整个组合统一视为 AGPL 或不受限制的开源软件**。本仓库引用外部镜像，不重新发布 NapCat 源码、修改版或镜像。使用前请阅读[第三方说明](THIRD_PARTY_NOTICES.md)。
 
 项目地址：[astrbot-qwenpaw](https://github.com/misaki-mei-yue/astrbot-qwenpaw)。报告问题时请去除日志中的密钥、账号、聊天与个人文件内容。
+
+社区友链：[LINUX DO](https://linux.do/)
