@@ -660,17 +660,32 @@ backupElement("toggle").addEventListener("click", () => {
   if (!backupDialog.open) backupDialog.showModal();
   void readBackupStatus();
 });
-backupElement("close").addEventListener("click", () => backupDialog.close());
-backupDialog.addEventListener("close", () => {
+function clearBackupDialogInputs() {
   clearBackupSecrets();
   backupElement("file").value = "";
+}
+
+function closeBackupDialog() {
+  // Native dialog close events can be deferred. Remove secrets before hiding
+  // the dialog so Escape, the close button and backdrop have the same guarantee.
+  clearBackupDialogInputs();
+  backupDialog.close();
+}
+
+backupElement("close").addEventListener("click", closeBackupDialog);
+backupDialog.addEventListener("cancel", event => {
+  event.preventDefault();
+  closeBackupDialog();
+});
+backupDialog.addEventListener("close", () => {
+  clearBackupDialogInputs();
   if (!backupIsActive() && !backupPosting) backupAbort?.abort();
   scheduleBackupPoll();
 });
 backupDialog.addEventListener("click", event => {
   if (event.target !== backupDialog) return;
   const rect = backupDialog.getBoundingClientRect();
-  if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) backupDialog.close();
+  if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) closeBackupDialog();
 });
 for (const id of ["password", "password-confirm", "import-password", "file", "source-stopped", "overwrite"]) {
   backupElement(id).addEventListener(id === "file" || id === "source-stopped" || id === "overwrite" ? "change" : "input", renderBackup);
