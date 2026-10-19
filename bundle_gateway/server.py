@@ -195,13 +195,17 @@ async def dispatch(request):
     state = request.app[STATE]
     app_name = resolve_app(request, state["port"])
     if app_name:
-        if request.path == "/bundle-update" or request.path.startswith("/bundle-update/"):
+        if request.path in {"/bundle-update", "/bundle-backup"} or request.path.startswith(("/bundle-update/", "/bundle-backup/")):
             raise web.HTTPForbidden(text="Use the local portal for updates.")
         return await proxy(request, state, app_name)
     if request.path == "/bundle-update" or request.path.startswith("/bundle-update/"):
         if request.host != "localhost:" + str(state["port"]):
             raise web.HTTPForbidden(text="Use the local portal for updates.")
         return await state["updates"].handle(request, state["portal"])
+    if request.path == "/bundle-backup" or request.path.startswith("/bundle-backup/"):
+        if request.host != "localhost:" + str(state["port"]):
+            raise web.HTTPForbidden(text="Use the local portal for backups.")
+        return await state["backups"].handle(request, state["portal"])
     if request.method not in {"GET", "HEAD"}:
         raise web.HTTPMethodNotAllowed(request.method, ["GET", "HEAD"])
     if request.path == "/bundle-health":
@@ -220,7 +224,7 @@ async def dispatch(request):
     return response
 
 
-def create_app(*, token, port=18080, upstreams=None, agent="default", update_ipc=None, version_root=None):
+def create_app(*, token, port=18080, upstreams=None, agent="default", update_ipc=None, backup_ipc=None, version_root=None):
     if not re.fullmatch(r"[A-Za-z0-9._~-]{32,256}", token or ""):
         raise ValueError("A private runtime token is required.")
     if not isinstance(port, int) or not 1024 <= port <= 65535:
@@ -236,6 +240,8 @@ def create_app(*, token, port=18080, upstreams=None, agent="default", update_ipc
     app = web.Application(client_max_size=MAX_UPLOAD)
     from bundle_gateway.updates import UpdateAPI
     state["updates"] = UpdateAPI(Path(update_ipc) if update_ipc else None, token, Path(version_root) if version_root else Path(__file__).resolve().parents[1])
+    from bundle_gateway.backups import BackupAPI
+    state["backups"] = BackupAPI(Path(backup_ipc) if backup_ipc else None, token)
     app[STATE] = state
 
     async def session_context(app):
@@ -254,7 +260,7 @@ def create_app(*, token, port=18080, upstreams=None, agent="default", update_ipc
 
 def main():
     port = int(os.environ.get("BUNDLE_PORT", "18080"))
-    app = create_app(token=os.environ.get("QWENPAW_RUNTIME_INTERNAL_TOKEN", ""), port=port, agent=os.environ.get("QWENPAW_AGENT_ID", "default"), update_ipc=os.environ.get("BUNDLE_UPDATE_IPC"))
+    app = create_app(token=os.environ.get("QWENPAW_RUNTIME_INTERNAL_TOKEN", ""), port=port, agent=os.environ.get("QWENPAW_AGENT_ID", "default"), update_ipc=os.environ.get("BUNDLE_UPDATE_IPC"), backup_ipc=os.environ.get("BUNDLE_BACKUP_IPC"))
     web.run_app(app, host="0.0.0.0", port=port, access_log=None)
 
 

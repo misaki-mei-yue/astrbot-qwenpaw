@@ -14,6 +14,9 @@ function Invoke-BundleStop {
         throw 'The local Linux Docker engine is not running. Nothing was stopped.'
     }
     $python = Find-BundlePython
+    $backupBootstrap = Join-Path $paths.Root 'scripts\backup_host.py'
+    Assert-BundleNoLinks $backupBootstrap
+    $null = Invoke-BundleChecked $python.File ($python.Prefix + @($backupBootstrap, '--runtime-root', $paths.Runtime, '--', '--stop', '--root', $paths.Root, '--project', $paths.Project, '--context', $context)) 'Stopping encrypted backup helper' 45
     $updateScript = Get-BundleUpdaterScript $paths
     Assert-BundleNoLinks $updateScript
     $null = Invoke-BundleChecked $python.File ($python.Prefix + @($updateScript, "--stop", "--root", $paths.Root, "--project", $paths.Project, "--context", $context)) "Stopping bundle update helper" 30

@@ -524,7 +524,7 @@ class UpdaterDaemon:
         return factory(self.root, self.project, self.context, self.private, self._report)
 
     def initialize(self, *, background=False):
-        def recover():
+        def recover_unlocked():
             previous_phase = self.state["phase"]
             self._publish(active=True, phase="updating")
             try:
@@ -555,6 +555,13 @@ class UpdaterDaemon:
                 self._log("startup_recovery_failed", error)
                 self._publish(active=False, phase="failed", recovery_required=True, startup_failed=True,
                               update_capable=False, error="manual_recovery_required")
+                self.ready = True
+        def recover():
+            try:
+                with FileLock(self.private / "operation.lock"):
+                    recover_unlocked()
+            except BlockingIOError:
+                self._publish(active=False, phase="failed", error="backup_busy", update_capable=False)
                 self.ready = True
         if background:
             self.worker = threading.Thread(target=recover, name="bundle-recovery", daemon=True)
@@ -655,10 +662,14 @@ class UpdaterDaemon:
 
     def _job(self, request):
         try:
-            if request["action"] == "check":
-                self._check()
-            else:
-                self._apply(request["candidate_id"])
+            with FileLock(self.private / "operation.lock"):
+                backup_journal = self.root / "runtime/backups/private/transaction.json"
+                if _pending_recovery(backup_journal.parent):
+                    _error("recovery_required", "Finish backup recovery before updating.")
+                if request["action"] == "check":
+                    self._check()
+                else:
+                    self._apply(request["candidate_id"])
         except Exception as error:
             self._log(error.code if isinstance(error, ReleaseError) else "update_job_failed", error)
             self._publish(phase="failed", active=False,

@@ -22,7 +22,7 @@ from typing import Iterable
 import zipfile
 
 
-DEFAULT_VERSION = "0.6.1-alpha"
+DEFAULT_VERSION = "0.7.0-alpha"
 MANIFEST_NAME = "RELEASE-MANIFEST.json"
 PUBLIC_ROOT_FILES = frozenset({
     ".dockerignore", ".env.example", ".gitattributes", ".gitignore",
@@ -60,7 +60,7 @@ PRIVATE_FILENAMES = frozenset({"cleanup_legacy_bootstrap.py"})
 PRIVATE_SUFFIXES = frozenset({
     ".db", ".sqlite", ".sqlite3", ".zip", ".tar", ".gz", ".tgz", ".7z",
     ".log", ".pyc", ".pyo", ".key", ".pem", ".pfx", ".p12", ".bak",
-    ".before", ".lock", ".wal", ".shm",
+    ".before", ".lock", ".wal", ".shm", ".aqbackup",
 })
 VERSION_RE = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9][A-Za-z0-9.-]*)?\Z")
 SECRET_RULES = (

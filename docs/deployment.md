@@ -1,5 +1,11 @@
 # Linux 与已有 AstrBot 部署
 
+## 新版完整安装与备份
+
+0.7.0-alpha 起，全新完整部署可直接在源码目录运行 `bash deploy/start.sh`；它使用独立的 `runtime/` 与派生 Compose 项目名，启动三组件、统一入口和宿主更新／备份执行器。需要本机 Docker Compose、Python 3.10+；缺少加密依赖时在项目内准备专用环境。VPS 通过 SSH 转发到 `127.0.0.1:18080` 使用。停止运行 `bash deploy/stop.sh`。
+
+原有 `deploy/setup.sh` 完整安装可用 `bash deploy/start.sh --data-dir /opt/bot-combined` 接入备份入口；已有 AstrBot 加装保持后文原流程，暂不支持完整迁移包。详细导出、跨服务器导入、版本限制与路径校正见[加密备份与恢复](backups.md)。
+
 本仓库提供 Compose 配置和文件准备脚本。**Linux 流程需要手动检查并执行构建、启动命令**；`setup.sh` / `upgrade_existing.sh` 只准备目录、私密配置与初始 NapCat 网络设置，不安装软件、不启动容器、不修改域名或现有服务。
 
 Windows 本地体验优先使用[双击启动方式](windows.md)。下面的 Linux 配置与 Windows 统一入口不同，分别提供原生后台的回环端口。

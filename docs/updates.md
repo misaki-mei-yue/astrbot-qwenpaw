@@ -31,6 +31,8 @@
 
 ## Linux
 
+0.7.0-alpha 起，完整安装可运行根目录 `bash deploy/start.sh`，由启动器准备配置并启动更新／备份执行器和统一入口，停止使用 `bash deploy/stop.sh`。跨服务器迁移使用独立的[备份与恢复](backups.md)，不使用更新事务目录代替迁移包。
+
 传统 `compose.yaml` 和已有 AstrBot 加装流程仍使用原部署说明，暂不支持此网页更新。需要本机统一入口时，在完整源码目录中准备配置并使用 `compose.bundle.yaml`。用 Python 3.10+ 启动宿主执行器：
 
 ```sh

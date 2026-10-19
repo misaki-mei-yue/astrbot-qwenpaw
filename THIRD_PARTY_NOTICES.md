@@ -23,6 +23,8 @@ NapCat 4.18.33 的许可证含非商业使用、再分发署名和许可文本�
 
 [aiohttp](https://github.com/aio-libs/aiohttp)、[jsonschema](https://github.com/python-jsonschema/jsonschema)、[PyYAML](https://github.com/yaml/pyyaml) 等依赖通过包管理器或上游镜像取得。本仓库不以自己的许可证替换其许可。Docker、浏览器、系统包、模型服务与消息平台也分别适用其条款。
 
+备份功能使用 [cryptography](https://github.com/pyca/cryptography) 的 AES-GCM 与 Scrypt 实现；该依赖适用其 Apache-2.0 或 BSD-3-Clause 双重许可及随包通知。启动器缺少该依赖时仅准备项目专用环境，不自动修改全局 Python 包。
+
 若以后分发含第三方源码、镜像或二进制的产物，须另行核对该产物中的许可与通知；本文件不替代任何第三方许可证。
 
 ## 随附许可原文

@@ -13,6 +13,9 @@ bridge-files/
 *.tar.gz
 *.zip
 *.log
+*.aqbackup
+state/
+backup-host-env/
 .venv/
 .test-deps/
 __pycache__/
