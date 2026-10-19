@@ -480,7 +480,11 @@ class TaskGuardTests(unittest.TestCase):
             def open(self, request, timeout):
                 requests.append(request)
                 self.timeout = timeout
-                return Reply(health if request.full_url.endswith("/healthz") else jobs)
+                if request.full_url.endswith("/healthz"):
+                    return Reply(health)
+                if isinstance(jobs, dict):
+                    return Reply(jobs[request.full_url.rsplit("/", 3)[1]])
+                return Reply(jobs)
         output = io.StringIO()
         with patch.dict(os.environ, {"QWENPAW_RUNTIME_INTERNAL_TOKEN": "T" * 40}), patch("urllib.request.build_opener", return_value=Opener()), patch("sys.stdout", output):
             exec(compile(TASK_GUARD, "<read-only-job-guard>", "exec"), {})
@@ -496,10 +500,36 @@ class TaskGuardTests(unittest.TestCase):
         result, _ = self.guard({"status": "ok", "agents_loaded": ["default"]}, [{"enabled": True}])
         self.assertEqual(result, {"allowed": False, "reason": "scheduled_jobs_enabled"})
 
+    def test_legacy_dotted_agent_is_checked_before_allowing_update(self):
+        result, requests = self.guard(
+            {"status": "ok", "agents_loaded": ["default", "legacy.persona-1"]},
+            {"default": [], "legacy.persona-1": [{"enabled": False}]},
+        )
+        self.assertEqual(result, {"allowed": True})
+        self.assertEqual([request.full_url for request in requests], [
+            "http://127.0.0.1:8088/api/healthz",
+            "http://127.0.0.1:8088/api/agents/default/cron/jobs",
+            "http://127.0.0.1:8088/api/agents/legacy.persona-1/cron/jobs",
+        ])
+
+    def test_enabled_job_in_legacy_dotted_agent_blocks_update(self):
+        result, requests = self.guard(
+            {"status": "ok", "agents_loaded": ["default", "legacy.persona-1"]},
+            {"default": [], "legacy.persona-1": [{"enabled": True}]},
+        )
+        self.assertEqual(result, {"allowed": False, "reason": "scheduled_jobs_enabled"})
+        self.assertEqual(len(requests), 3)
+        self.assertTrue(requests[-1].full_url.endswith("/agents/legacy.persona-1/cron/jobs"))
+
     def test_invalid_agent_cannot_escape_api_path(self):
-        result, requests = self.guard({"status": "ok", "agents_loaded": ["../../outside"]}, [])
-        self.assertEqual(result, {"allowed": False, "reason": "task_check_unavailable"})
-        self.assertEqual(len(requests), 1)
+        invalid = [".", "..", ".legacy", "../../outside", "agent/../outside", "agent\\outside",
+                   "agent%2foutside", "agent%2e%2e", "agent?outside", "agent#outside", "agent:outside",
+                   "agent outside", "agent\nother", "agent\x00other", "a" * 129]
+        for agent in invalid:
+            with self.subTest(agent=repr(agent)):
+                result, requests = self.guard({"status": "ok", "agents_loaded": [agent]}, [])
+                self.assertEqual(result, {"allowed": False, "reason": "task_check_unavailable"})
+                self.assertEqual(len(requests), 1)
 
     def test_unknown_enabled_flag_or_too_many_agents_fail_closed(self):
         for health, jobs in (({"status": "ok", "agents_loaded": ["default"]}, [{"enabled": "false"}]),

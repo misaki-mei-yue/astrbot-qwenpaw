@@ -130,7 +130,7 @@ services:
       BUNDLE_BACKUP_IPC: /bundle-backups
     volumes:
     - ${INSTALL_ROOT:?}/updates/ipc:/bundle-updates
-      - ${INSTALL_ROOT:?}/backups/ipc:/bundle-backups
+    - ${INSTALL_ROOT:?}/backups/ipc:/bundle-backups
     ports:
     - 127.0.0.1:18080:18080
     networks:
