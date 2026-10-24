@@ -261,14 +261,18 @@ void readUpdateStatus();
 // Backups use a separate explicit workflow. Uploading never starts a restore.
 const backupDialog = document.getElementById("backup-dialog");
 const backupElement = id => document.getElementById("backup-" + id);
-const backupTabs = ["export", "import", "list"];
-const backupActivePhases = new Set(["exporting", "inspecting", "restoring"]);
+const backupTabs = ["export", "import", "list", "webdav"];
+const backupActivePhases = new Set(["exporting", "inspecting", "restoring", "remote_config", "remote_testing", "remote_backup", "remote_retry"]);
 const backupMessages = {
   idle: "选择导出备份，或上传已有备份进行检查。",
   exporting: "正在加密导出备份，完成后服务会重新连接。",
   inspecting: "正在检查备份密码、完整性和恢复位置…",
   ready_to_restore: "检查通过。确认旧服务器已停止后，才能开始恢复。",
   restoring: "正在恢复数据，请保持服务器运行。页面会自动重新连接。",
+  remote_config: "正在保存自动备份设置…",
+  remote_testing: "正在测试网盘连接和读写权限…",
+  remote_backup: "正在加密备份并上传到网盘，请保持服务器运行。",
+  remote_retry: "正在重试失败的网盘，不会重新生成备份。",
   completed: "操作已完成。",
   failed: "操作未完成。请检查密码、备份文件和服务器上的诊断提示。",
   rolled_back: "恢复未通过检查，已恢复操作前的数据。"
@@ -310,6 +314,10 @@ let backupDismissedPlan = "";
 let backupPendingRequest = null;
 let backupConfirming = false;
 let backupSuppressResult = false;
+let webdavInitialized = false;
+let webdavDirty = false;
+let webdavSaveRequest = null;
+const webdavElement = id => backupElement("webdav-" + id);
 
 function backupIsActive() {
   return backupState.active === true || backupActivePhases.has(backupState.phase);
@@ -325,7 +333,8 @@ function backupRequestId(value) {
 
 function beginBackupRequest(action) {
   backupPendingRequest = { id: "", previous: backupRequestId(backupState.request_id), started: Date.now(),
-    phase: { export: "exporting", inspect: "inspecting", restore: "restoring" }[action] };
+    phase: { export: "exporting", inspect: "inspecting", restore: "restoring", "webdav-save": "remote_config",
+      "webdav-test": "remote_testing", "webdav-run": "remote_backup", "webdav-retry": "remote_retry" }[action] };
   backupSuppressResult = true;
 }
 
@@ -365,6 +374,9 @@ function backupDownloadLink(id) {
 
 function clearBackupSecrets() {
   for (const id of ["password", "password-confirm", "import-password"]) backupElement(id).value = "";
+  webdavElement("password").value = "";
+  webdavElement("confirm").value = "";
+  for (const input of webdavElement("destinations").querySelectorAll('input[type="password"]')) input.value = "";
   backupElement("show-password").checked = false;
   backupElement("password").type = "password";
   backupElement("password-confirm").type = "password";
@@ -398,7 +410,8 @@ function renderBackup() {
   else if (backupReconnect) message = "正在重新连接备份服务，不会重复提交操作。";
   else if (backupConfirming) message = "正在确认操作状态，不会重复提交。请保持服务器运行。";
   else if (backupUploadProgress !== null) message = "正在上传备份… " + backupUploadProgress + "%";
-  else if (Object.hasOwn(backupErrors, backupState.error)) message = backupErrors[backupState.error];
+  else if (backupState.phase === "failed" && Object.hasOwn(backupErrors, backupState.error)) message = backupErrors[backupState.error];
+  else if (backupState.phase === "failed" && typeof backupState.error === "string" && backupState.error.startsWith("webdav_")) message = webdavError(backupState.error);
   else if (backupState.phase === "ready_to_restore" && !validBackupPlan(backupState.plan)) message = "备份检查结果不完整，无法开始恢复。请重新上传检查。";
   backupElement("message").textContent = message;
   backupElement("status").setAttribute("aria-busy", String(busy));
@@ -487,6 +500,7 @@ function renderBackup() {
     list.append(row);
   }
   backupElement("empty").hidden = list.children.length > 0;
+  renderWebdav(blocked, busy);
 }
 
 function scheduleBackupPoll() {
@@ -549,6 +563,7 @@ async function backupPost(action, body) {
   }
   const accepted = await response.json();
   if (backupPendingRequest) backupPendingRequest.id = backupRequestId(accepted?.request_id);
+  return backupRequestId(accepted?.request_id);
 }
 
 function canPostBackup() {
@@ -643,6 +658,270 @@ async function submitBackupRestore() {
   }
 }
 
+// Remote destinations are rendered as editable fields, never HTML. Polling only
+// updates status; it must not replace an administrator's unsaved configuration.
+function webdavConfiguration() {
+  const config = backupState.webdav?.config;
+  return config && typeof config === "object" && Array.isArray(config.destinations) ? config : null;
+}
+
+function webdavBytes(value) { return new TextEncoder().encode(value).length; }
+
+function webdavOffsetLabel(offset) {
+  const minutes = Math.abs(offset);
+  return "UTC" + (offset < 0 ? "−" : "+") + String(Math.floor(minutes / 60)).padStart(2, "0") + ":" + String(minutes % 60).padStart(2, "0");
+}
+
+function webdavDate(value, offset = 0) {
+  if (typeof value !== "number" || !Number.isFinite(value)) return "时间未知";
+  const date = new Date((value + offset * 60) * 1000);
+  return Number.isFinite(date.getTime()) ? date.toLocaleString("zh-CN", { timeZone: "UTC", hour12: false }) + " " + webdavOffsetLabel(offset) : "时间未知";
+}
+
+function webdavError(code) {
+  // Upstream errors can contain credentials, request URLs or local paths. Only
+  // translate recognized codes; never interpolate an upstream message here.
+  return ({
+    authentication: "账号或应用密码未通过验证。", permission: "没有此目录的读写权限。",
+    redirect: "网盘要求跳转，请填写最终的 HTTPS WebDAV 地址。", timeout: "连接超时，请检查网盘服务后重试。",
+    connection: "无法连接网盘，请检查地址和网络。", tls: "网盘的 HTTPS 证书验证失败。",
+    remote_unavailable: "网盘暂时不可用，请稍后重试。", remote_invalid: "此地址未返回有效的 WebDAV 响应。",
+    remote_size: "网盘上的文件大小与备份不一致。", path_invalid: "备份目录无效，请检查 WebDAV 地址。",
+    url_invalid: "请填写有效的 HTTPS WebDAV 地址。", credentials_invalid: "账号或应用密码格式不正确。",
+    source_invalid: "本机备份文件不可用，请重新生成备份。", conflict: "网盘目录存在冲突，请检查目录。",
+    storage_full: "网盘空间不足，请释放空间或调整保留份数。", unsupported: "网盘不支持所需的 WebDAV 操作。",
+    cleanup_failed: "文件已上传，但清理旧备份未完成，请检查网盘删除权限。",
+    webdav_password_required: "请先设置自动备份密码。", webdav_config_invalid: "自动备份设置不完整，请检查后保存。",
+    webdav_no_destinations: "请至少启用一个网盘。", webdav_busy: "已有备份或更新操作正在进行。",
+    webdav_run_not_found: "这次备份已不可重试，请重新生成备份。", webdav_archive_missing: "本机备份包已不存在，请重新生成备份。",
+    webdav_credentials_required: "新增网盘或更改地址、账号后，请重新填写应用密码。",
+    webdav_setup_required: "请先设置备份密码，并启用至少一个网盘。",
+    webdav_operation_incomplete: "部分操作未完成，请查看下方每个网盘的结果；可以重试失败网盘。",
+    webdav_target_changed: "网盘地址或账号已改变，不能重试旧任务；请发起新的备份。",
+    webdav_target_unknown: "该网盘已删除，请检查保存的设置。",
+    webdav_url_invalid: "请填写有效的 HTTPS WebDAV 地址，不能包含账号、密码或查询参数。",
+    webdav_archive_unavailable: "原加密备份文件已不可用，请重新生成备份。",
+    webdav_retry_unavailable: "当前没有可重试的备份文件，请检查最近一次任务。",
+    webdav_run_unknown: "仅支持重试最近一次失败的任务，请刷新状态。",
+    webdav_interrupted: "上次运行中断，可以重试仍保留在本机的备份包。",
+    webdav_export_failed: "本机备份生成失败，请检查运行中的任务和磁盘空间。",
+    webdav_key_missing: "本机备份设置的保护密钥丢失，请查看服务器诊断。",
+    webdav_key_invalid: "本机备份设置的保护密钥不可用，请查看服务器诊断。",
+    webdav_state_invalid: "本机备份设置损坏，请查看服务器诊断。"
+  })[code] || "操作未完成，请检查设置或服务器上的诊断提示。";
+}
+
+function markWebdavDirty() { webdavDirty = true; renderBackup(); }
+
+function appendWebdavDestination(destination = {}) {
+  const id = backupId(destination.id) ? destination.id
+    : [...crypto.getRandomValues(new Uint8Array(16))].map(byte => byte.toString(16).padStart(2, "0")).join("");
+  const card = document.createElement("fieldset"); card.className = "backup-webdav-target";
+  card.dataset.targetId = id; card.dataset.passwordSet = String(destination.password_set === true);
+  const legend = document.createElement("legend"); legend.textContent = "备份网盘"; card.append(legend);
+  const heading = document.createElement("div"); heading.className = "backup-webdav-target-heading";
+  const enabledLabel = document.createElement("label"); enabledLabel.className = "backup-inline-check";
+  const enabled = document.createElement("input"); enabled.type = "checkbox"; enabled.dataset.field = "enabled";
+  enabled.checked = destination.enabled !== false; enabledLabel.append(enabled, document.createTextNode("启用此网盘"));
+  const remove = document.createElement("button"); remove.type = "button"; remove.dataset.action = "remove";
+  remove.textContent = "移除";
+  remove.addEventListener("click", () => { card.remove(); markWebdavDirty(); webdavElement("add").focus(); });
+  heading.append(enabledLabel, remove); card.append(heading);
+  const fields = [
+    ["name", "网盘名称", "text", 120, "例如：家庭网盘"],
+    ["url", "HTTPS WebDAV 地址（可包含备份目录）", "url", 2048, "https://…"],
+    ["username", "账号", "text", 512, ""],
+    ["password", "应用密码", "password", 2048, destination.password_set === true ? "已保存，留空保留原密码" : "填写网盘的应用密码"]
+  ];
+  for (const [name, text, type, length, placeholder] of fields) {
+    const label = document.createElement("label"); label.className = "backup-field";
+    label.htmlFor = "backup-webdav-" + id + "-" + name; label.append(document.createTextNode(text));
+    const input = document.createElement("input"); input.id = label.htmlFor; input.type = type; input.dataset.field = name;
+    input.maxLength = length; input.autocomplete = type === "password" ? "new-password" : "off";
+    input.spellcheck = false; input.placeholder = placeholder;
+    if (name !== "password") input.value = typeof destination[name] === "string" ? destination[name] : "";
+    label.append(input); card.append(label);
+  }
+  const actions = document.createElement("div"); actions.className = "backup-webdav-target-actions";
+  const test = document.createElement("button"); test.type = "button"; test.dataset.action = "test";
+  test.textContent = "测试已保存的连接";
+  test.addEventListener("click", () => void submitWebdavAction("webdav-test", { target_id: id }));
+  actions.append(test); card.append(actions);
+  for (const input of card.querySelectorAll("input")) input.addEventListener(input.type === "checkbox" ? "change" : "input", markWebdavDirty);
+  webdavElement("destinations").append(card);
+  return card;
+}
+
+function loadWebdavConfiguration() {
+  const config = webdavConfiguration(); if (!config) return;
+  webdavElement("enabled").checked = config.enabled === true;
+  webdavElement("time").value = /^\d{2}:\d{2}$/.test(config.time) ? config.time : "03:00";
+  const offset = Number.isInteger(config.utc_offset_minutes) && config.utc_offset_minutes >= -720 && config.utc_offset_minutes <= 840 ? config.utc_offset_minutes : 480;
+  const select = webdavElement("offset");
+  for (const option of [...select.querySelectorAll('[data-custom="true"]')]) option.remove();
+  if (![...select.options].some(option => option.value === String(offset))) {
+    const option = document.createElement("option"); option.value = String(offset); option.textContent = webdavOffsetLabel(offset);
+    option.dataset.custom = "true"; select.append(option);
+  }
+  select.value = String(offset);
+  webdavElement("keep").value = Number.isInteger(config.keep_last) && config.keep_last >= 1 && config.keep_last <= 100 ? config.keep_last : 7;
+  webdavElement("password").value = ""; webdavElement("confirm").value = "";
+  webdavElement("password").placeholder = config.password_set === true ? "已保存，留空保留原密码" : "至少 12 个字符";
+  webdavElement("destinations").replaceChildren();
+  for (const destination of config.destinations.slice(0, 10)) if (destination && backupId(destination.id)) appendWebdavDestination(destination);
+  webdavInitialized = true; webdavDirty = false;
+}
+
+function webdavConfigBody() {
+  return {
+    enabled: webdavElement("enabled").checked, time: webdavElement("time").value,
+    utc_offset_minutes: Number(webdavElement("offset").value), keep_last: Number(webdavElement("keep").value),
+    password: webdavElement("password").value,
+    destinations: [...webdavElement("destinations").children].map(card => ({
+      id: card.dataset.targetId, enabled: card.querySelector('[data-field="enabled"]').checked,
+      name: card.querySelector('[data-field="name"]').value.trim(), url: card.querySelector('[data-field="url"]').value.trim(),
+      username: card.querySelector('[data-field="username"]').value, password: card.querySelector('[data-field="password"]').value
+    }))
+  };
+}
+
+function webdavValidation(body) {
+  if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(body.time)) return "请选择每天的备份时间。";
+  if (!Number.isInteger(body.utc_offset_minutes) || body.utc_offset_minutes < -720 || body.utc_offset_minutes > 840) return "请选择有效的时区。";
+  if (!Number.isInteger(body.keep_last) || body.keep_last < 1 || body.keep_last > 100) return "保留份数必须是 1–100 之间的整数。";
+  if (body.password && (!backupPasswordValid(body.password, true) || /[\x00-\x1f\x7f]/.test(body.password))) return "自动备份密码至少 12 个字符，不能包含控制字符，且不能超过 1024 字节。";
+  if (body.password !== webdavElement("confirm").value) return "两次输入的自动备份密码不一致。";
+  if (body.enabled && !body.password && !webdavConfiguration()?.password_set) return "开启自动备份前，请先设置备份密码。";
+  if (body.enabled && !body.destinations.some(target => target.enabled)) return "开启自动备份前，请至少启用一个网盘。";
+  for (const target of body.destinations) {
+    if (!target.name || webdavBytes(target.name) > 120 || /[\x00-\x1f\x7f]/.test(target.name)) return "请填写网盘名称，不能包含控制字符或超过 120 字节。";
+    try {
+      const url = new URL(target.url);
+      if (url.protocol !== "https:" || !url.hostname || url.username || url.password || url.search || url.hash || webdavBytes(target.url) > 2048 || /[\x00-\x1f\x7f]/.test(target.url)) throw new Error();
+    } catch { return "请填写完整的 HTTPS WebDAV 地址，账号和密码请放在单独的输入框中。"; }
+    if (!target.username || webdavBytes(target.username) > 512 || /[:\x00-\x1f\x7f]/.test(target.username)) return "请填写有效的网盘账号，不能包含冒号或控制字符。";
+    if (webdavBytes(target.password) > 2048 || /[\x00-\x1f\x7f]/.test(target.password)) return "网盘应用密码不能包含控制字符或超过 2048 字节。";
+    const saved = webdavConfiguration()?.destinations.find(item => item.id === target.id);
+    let sameAccount = false;
+    try {
+      sameAccount = saved?.password_set && saved.username === target.username
+        && new URL(saved.url).href.replace(/\/?$/, "/") === new URL(target.url).href.replace(/\/?$/, "/");
+    } catch { /* A malformed stored URL cannot authorize reusing a password. */ }
+    if (!target.password && !sameAccount) return "新增网盘或更改地址、账号后，请重新填写应用密码。";
+  }
+  return "";
+}
+
+function renderWebdav(blocked, busy) {
+  const remote = backupState.webdav;
+  const config = webdavConfiguration();
+  if (!webdavInitialized && config && !webdavDirty) loadWebdavConfiguration();
+  if (webdavSaveRequest) {
+    const currentId = backupRequestId(backupState.request_id);
+    const matched = webdavSaveRequest.id ? currentId === webdavSaveRequest.id : currentId && currentId !== webdavSaveRequest.previous;
+    if (matched && !backupIsActive()) {
+      if (backupState.phase === "completed") loadWebdavConfiguration();
+      webdavSaveRequest = null;
+    } else if (!backupPendingRequest && Date.now() - webdavSaveRequest.started > 130000) webdavSaveRequest = null;
+  }
+  const locked = blocked || busy || !config;
+  const passwordSet = config?.password_set === true;
+  webdavElement("password-state").textContent = passwordSet ? "已有自动备份密码。两项均留空即可保留，密码不会显示在页面上。" : "尚未设置自动备份密码。";
+  for (const input of webdavElement("form").querySelectorAll("input, select")) input.disabled = locked;
+  const cards = [...webdavElement("destinations").children];
+  for (const card of cards) {
+    card.querySelector('[data-action="remove"]').disabled = locked;
+    const saved = config?.destinations.find(item => item.id === card.dataset.targetId);
+    card.querySelector('[data-action="test"]').disabled = locked || webdavDirty || !saved?.password_set;
+  }
+  webdavElement("empty").hidden = cards.length > 0;
+  webdavElement("add").disabled = locked || cards.length >= 10;
+  webdavElement("dirty").hidden = !webdavDirty;
+  const validation = webdavValidation(webdavConfigBody());
+  webdavElement("validation").textContent = webdavDirty ? validation : "";
+  webdavElement("save").disabled = locked || !webdavDirty || Boolean(validation);
+  webdavElement("reset").disabled = locked || !webdavDirty;
+  const offset = Number.isInteger(config?.utc_offset_minutes) ? config.utc_offset_minutes : 480;
+  webdavElement("next").textContent = config?.enabled === true
+    ? remote?.next_run ? "下次自动备份：" + webdavDate(remote.next_run, offset) : "自动备份已开启，正在计算下次运行时间。"
+    : "每日自动备份已关闭。保存网盘设置后仍可手动备份。";
+  const test = remote?.test_result;
+  webdavElement("test-result").hidden = !test;
+  if (test) {
+    const target = config?.destinations.find(item => item.id === test.target_id);
+    webdavElement("test-result").textContent = (typeof target?.name === "string" ? target.name : "网盘")
+      + (test.ok === true ? "：连接及读写测试通过。" : "：" + webdavError(test.error));
+    webdavElement("test-result").dataset.success = String(test.ok === true);
+  }
+  const run = remote?.last_run;
+  const runStatuses = { running: "正在执行", completed: "全部完成", partial: "部分网盘失败", failed: "备份失败", interrupted: "运行中断" };
+  const triggerLabel = trigger => trigger === "scheduled" || trigger === "schedule" ? "定时备份" : trigger === "retry" ? "重试备份" : "手动备份";
+  webdavElement("run-summary").textContent = run
+    ? triggerLabel(run.trigger) + " · " + (runStatuses[run.status] || "状态待确认") + " · " + webdavDate(run.started_at, offset)
+      + (run.error ? "。" + webdavError(run.error) : "")
+    : "还没有自动备份记录。";
+  const results = webdavElement("results"); results.replaceChildren();
+  for (const target of (Array.isArray(run?.targets) ? run.targets : []).slice(0, 10)) {
+    const row = document.createElement("li"); const name = document.createElement("strong");
+    name.textContent = typeof target.name === "string" ? target.name : "网盘";
+    const status = document.createElement("span");
+    status.textContent = ({ pending: "等待上传", uploading: "正在上传", completed: "上传完成", failed: "上传失败" })[target.status] || "状态待确认";
+    row.dataset.state = typeof target.status === "string" ? target.status : ""; row.append(name, status);
+    if (target.status === "failed") { const error = document.createElement("p"); error.textContent = webdavError(target.error); row.append(error); }
+    results.append(row);
+  }
+  const enabledTargets = config?.destinations.filter(target => target.enabled) || [];
+  webdavElement("run").disabled = locked || webdavDirty || !passwordSet || !enabledTargets.length || enabledTargets.some(target => !target.password_set);
+  const canRetry = run && backupId(run.id) && ["partial", "failed", "interrupted"].includes(run.status)
+    && backupId(run.backup_id) && run.targets?.some(target => target.status === "failed" || target.status === "pending" || target.status === "uploading");
+  webdavElement("retry").hidden = !canRetry;
+  webdavElement("retry").disabled = locked || webdavDirty || !canRetry;
+  const history = webdavElement("history").querySelector("ul"); history.replaceChildren();
+  for (const item of (Array.isArray(remote?.history) ? remote.history : []).slice(0, 20)) {
+    const li = document.createElement("li"); li.textContent = webdavDate(item.started_at, offset) + " · " + triggerLabel(item.trigger) + " · " + (runStatuses[item.status] || "状态待确认"); history.append(li);
+  }
+  webdavElement("history").hidden = !history.children.length;
+}
+
+async function submitWebdavAction(action, body) {
+  if (!canPostBackup() || !webdavConfiguration()) return;
+  if (action !== "webdav-save" && webdavDirty) return;
+  if (action === "webdav-save" && webdavValidation(body)) return;
+  beginBackupRequest(action);
+  if (action === "webdav-save") webdavSaveRequest = { id: "", previous: backupPendingRequest.previous, started: backupPendingRequest.started };
+  clearBackupSecrets(); backupPosting = true; backupNotice = ""; renderBackup();
+  try {
+    const id = await backupPost(action, body);
+    if (action === "webdav-save" && webdavSaveRequest) webdavSaveRequest.id = id;
+    backupState = { ...backupState, phase: backupPendingRequest?.phase || "remote_config", active: true, result: null };
+  } catch {
+    if (!backupPendingRequest) webdavSaveRequest = null;
+    backupNotice = "网盘操作的结果尚未确认。正在检查状态，不会自动重复提交。";
+    backupReconnect = true;
+  } finally {
+    if (action === "webdav-save") {
+      body.password = "";
+      for (const destination of body.destinations) destination.password = "";
+    }
+    backupPosting = false; renderBackup(); await readBackupStatus();
+  }
+}
+
+webdavElement("form").addEventListener("submit", event => { event.preventDefault(); void submitWebdavAction("webdav-save", webdavConfigBody()); });
+for (const id of ["enabled", "time", "offset", "keep", "password", "confirm"]) {
+  webdavElement(id).addEventListener(["enabled", "offset"].includes(id) ? "change" : "input", markWebdavDirty);
+}
+webdavElement("add").addEventListener("click", () => {
+  if (!canPostBackup() || !webdavConfiguration() || webdavElement("destinations").children.length >= 10) return;
+  const card = appendWebdavDestination(); markWebdavDirty(); card.querySelector('[data-field="name"]').focus();
+});
+webdavElement("reset").addEventListener("click", () => { if (canPostBackup()) { loadWebdavConfiguration(); renderBackup(); } });
+webdavElement("run").addEventListener("click", () => void submitWebdavAction("webdav-run", {}));
+webdavElement("retry").addEventListener("click", () => {
+  const run = backupState.webdav?.last_run;
+  if (run && backupId(run.id)) void submitWebdavAction("webdav-retry", { run_id: run.id });
+});
+
 for (const name of backupTabs) {
   const tab = backupElement("tab-" + name);
   tab.addEventListener("click", () => selectBackupTab(name));
@@ -657,7 +936,10 @@ for (const name of backupTabs) {
   });
 }
 backupElement("toggle").addEventListener("click", () => {
-  if (!backupDialog.open) backupDialog.showModal();
+  if (!backupDialog.open) {
+    if (!webdavDirty) webdavInitialized = false;
+    backupDialog.showModal();
+  }
   void readBackupStatus();
 });
 function clearBackupDialogInputs() {

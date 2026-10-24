@@ -50,6 +50,7 @@
       <button id="backup-tab-export" role="tab" aria-selected="true" aria-controls="backup-panel-export" data-backup-tab="export">导出备份</button>
       <button id="backup-tab-import" role="tab" aria-selected="false" aria-controls="backup-panel-import" tabindex="-1" data-backup-tab="import">导入恢复</button>
       <button id="backup-tab-list" role="tab" aria-selected="false" aria-controls="backup-panel-list" tabindex="-1" data-backup-tab="list">服务器备份</button>
+      <button id="backup-tab-webdav" role="tab" aria-selected="false" aria-controls="backup-panel-webdav" tabindex="-1" data-backup-tab="webdav">自动备份</button>
     </div>
     <div id="backup-status" role="status" aria-live="polite" aria-atomic="true"><p id="backup-message">正在连接备份服务…</p><p id="backup-step" hidden></p></div>
     <progress id="backup-progress" aria-label="备份与恢复进度" hidden></progress>
@@ -89,6 +90,40 @@
     <section id="backup-panel-list" class="backup-panel" role="tabpanel" aria-labelledby="backup-tab-list" hidden>
       <p class="backup-hint">这里的备份保存在当前服务器。下载到另一台设备，才能在服务器丢失时恢复。</p>
       <p id="backup-empty">还没有保存在服务器的备份。</p><ul id="backup-list" aria-label="已保存的加密备份"></ul>
+    </section>
+    <section id="backup-panel-webdav" class="backup-panel" role="tabpanel" aria-labelledby="backup-tab-webdav" hidden>
+      <p class="backup-note">每天自动加密备份，并上传到你启用的所有网盘。生成快照时聊天会短暂停止；可以关闭浏览器，但服务器和三合一服务需要保持运行。</p>
+      <form id="backup-webdav-form" autocomplete="off">
+        <label class="backup-inline-check"><input id="backup-webdav-enabled" type="checkbox"> 开启每日自动备份</label>
+        <div class="backup-field-grid">
+          <label class="backup-field" for="backup-webdav-time">每日备份时间<input id="backup-webdav-time" type="time" value="03:00" required></label>
+          <label class="backup-field" for="backup-webdav-offset">时间所在时区<select id="backup-webdav-offset"><option value="480">UTC+08:00（北京时间）</option><option value="0">UTC+00:00</option><option value="540">UTC+09:00</option><option value="60">UTC+01:00</option><option value="120">UTC+02:00</option><option value="330">UTC+05:30</option><option value="-300">UTC−05:00</option><option value="-480">UTC−08:00</option></select></label>
+        </div>
+        <p class="backup-hint">使用固定 UTC 偏移，不会自动切换夏令时。</p>
+        <label class="backup-field" for="backup-webdav-keep">每个网盘保留最近几份自动备份<input id="backup-webdav-keep" type="number" min="1" max="100" step="1" value="7" required></label>
+        <p class="backup-hint">可设置 1–100 份。本机保留同样份数的成功备份，另外最多保留同样份数未传完的备份，超过后自动轮换。只清理本功能生成的旧备份。</p>
+        <label class="backup-field" for="backup-webdav-password">自动备份密码<input id="backup-webdav-password" type="password" autocomplete="new-password" maxlength="1024" aria-describedby="backup-webdav-password-help"></label>
+        <p id="backup-webdav-password-help" class="backup-hint">首次设置至少 12 个字符。密码会受保护地保存在本机，供无人值守备份使用；请另外记下密码，在新 VPS 恢复时仍需要它。</p>
+        <label class="backup-field" for="backup-webdav-confirm">再次输入自动备份密码<input id="backup-webdav-confirm" type="password" autocomplete="new-password" maxlength="1024"></label>
+        <p id="backup-webdav-password-state" class="backup-hint"></p>
+        <div class="backup-webdav-heading"><h3>备份网盘</h3><button id="backup-webdav-add" type="button">＋ 添加网盘</button></div>
+        <p class="backup-hint">填写网盘提供的 HTTPS WebDAV 地址和应用密码。新增网盘或修改地址、账号后，需要重新填写应用密码。每个网盘单独上传，一个失败不影响其他网盘；连接测试会写入并删除一个小测试文件。修改后先保存，再测试连接。</p>
+        <p id="backup-webdav-empty" class="backup-hint">还没有配置网盘。可以添加多个备份位置。</p>
+        <div id="backup-webdav-destinations"></div>
+        <p id="backup-webdav-dirty" class="backup-hint" role="status" hidden>有尚未保存的修改。</p>
+        <p id="backup-webdav-validation" class="backup-hint"></p>
+        <div class="backup-actions"><button id="backup-webdav-reset" type="button">撤销修改</button><button id="backup-webdav-save" class="primary" type="submit">保存设置</button></div>
+      </form>
+      <section class="backup-webdav-activity" aria-labelledby="backup-webdav-activity-title">
+        <h3 id="backup-webdav-activity-title">备份状态</h3>
+        <p id="backup-webdav-next" class="backup-hint">自动备份尚未开启。</p>
+        <p id="backup-webdav-test-result" role="status" hidden></p>
+        <p id="backup-webdav-run-summary">还没有自动备份记录。</p>
+        <ul id="backup-webdav-results" class="backup-webdav-results" aria-label="各网盘备份结果"></ul>
+        <div class="backup-actions"><button id="backup-webdav-retry" type="button" hidden>重试失败网盘</button><button id="backup-webdav-run" type="button">立即备份到网盘</button></div>
+        <p class="backup-hint">立即备份使用已保存的设置；重试会继续上传原备份包，不会重新停止聊天生成备份。</p>
+        <details id="backup-webdav-history"><summary>最近运行记录</summary><ul class="backup-webdav-history-list"></ul></details>
+      </section>
     </section>
   </dialog>
 </body>

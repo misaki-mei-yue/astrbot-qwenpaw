@@ -436,6 +436,25 @@ class BackupController:
             raise BackupError("backup_archive_changed")
         return path
 
+    def delete_archive(self, backup_id):
+        """Remove an owned retained archive while caller holds operation.lock."""
+        if not isinstance(backup_id, str) or not ID.fullmatch(backup_id):
+            raise BackupError("unknown_backup")
+        catalog = self._catalog()
+        if not any(row["id"] == backup_id for row in catalog):
+            return
+        path = self.get_archive(backup_id)
+        transfer = self.runtime / "backups/ipc/transfers" / (backup_id + ".aqbackup")
+        _safe(transfer)
+        if transfer.exists():
+            _safe(transfer, file=True)
+            if transfer.stat().st_nlink != 1:
+                raise BackupError("invalid_backup_catalog")
+            transfer.unlink()
+        # Commit the catalog first; a crash leaves a harmless unlisted file.
+        _write_json(self.private / "catalog.json", {"format": 1, "backups": [r for r in catalog if r["id"] != backup_id]})
+        path.unlink()
+
     def _cleanup_plans(self):
         for path in (self.private / "plans").iterdir():
             _safe(path)

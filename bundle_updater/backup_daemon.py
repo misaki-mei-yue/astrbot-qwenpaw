@@ -19,10 +19,11 @@ import uuid
 from deploy.prepare import parse_env
 from .common import FileLock, atomic_json, metadata, read_json, safe_path, sign, verify
 from .daemon import _local_context, _protect_private
+from .webdav_protocol import REMOTE_PHASES, open_settings
 
 ID = re.compile(r"[0-9a-f]{32}\Z")
 UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\Z")
-PHASES = {"idle", "exporting", "inspecting", "ready_to_restore", "restoring", "completed", "failed", "rolled_back"}
+PHASES = {"idle", "exporting", "inspecting", "ready_to_restore", "restoring", "completed", "failed", "rolled_back"} | set(REMOTE_PHASES.values())
 
 
 def prepare(root, project, context, runtime_root=None, layout="bundle", *, check_context=True):
@@ -89,6 +90,9 @@ class BackupDaemon:
             self.recent = {}
         self.factory = controller_factory
         self.controller = None
+        self.remote = None
+        self.schedule_after = 0
+        self.plan_expires = 0
 
     def publish(self, **changes):
         with self.guard:
@@ -110,6 +114,28 @@ class BackupDaemon:
         return factory(self.root, self.project, self.context, self.private, self.report,
                        runtime_root=self.runtime, layout=self.layout)
 
+    def remote_report(self, event=None):
+        if self.remote is not None:
+            try:
+                self.publish(webdav=self.remote.public())
+            except Exception:
+                # A status write must not prevent recovery or updater restart.
+                pass
+
+    def remote_finished(self, result=None):
+        from .daemon import _pending_recovery
+        recovery = _pending_recovery(self.private)
+        failed = bool(result and (result.get("status", "completed") != "completed" or result.get("ok") is False))
+        self.publish(phase="failed" if recovery or failed else "completed", active=False,
+                     recovery_required=recovery,
+                     error="recovery_required" if recovery else "webdav_operation_incomplete" if failed else None,
+                     webdav=self.remote.public(), backups=self.public_catalog())
+
+    def sync_transfers(self):
+        for item in self.controller.list_backups()[:100]:
+            if not (self.ipc / "transfers" / (item["id"] + ".aqbackup")).exists():
+                self.transfer({**item, "archive_path": str(self.controller.get_archive(item["id"]))})
+
     def refresh_token(self):
         self.token = parse_env(safe_path(self.runtime / ".env"))["QWENPAW_RUNTIME_INTERNAL_TOKEN"]
 
@@ -126,10 +152,13 @@ class BackupDaemon:
                 self.refresh_token()
                 if result is not None:
                     self.state.update(phase=result["state"], recovery_required=result.get("recovery_required") is True)
-                catalog = self.controller.list_backups()
-                for item in catalog[:100]:
-                    if not (self.ipc / "transfers" / (item["id"] + ".aqbackup")).exists():
-                        self.transfer({**item, "archive_path": str(self.controller.get_archive(item["id"]))})
+                self.sync_transfers()
+                try:
+                    from .webdav_backup import WebDAVBackups
+                    self.remote = WebDAVBackups(self.private, self.controller, report=self.remote_report)
+                    self.state["webdav"] = self.remote.public()
+                except Exception:
+                    self.state["error"] = "webdav_config_invalid"
                 self.publish(active=False, ready=True, backups=self.public_catalog())
         except Exception as error:
             self.fail(error, recovery=True)
@@ -186,7 +215,24 @@ class BackupDaemon:
                 if _pending_recovery(self.runtime / "updates/private"):
                     raise ValueError("Finish update recovery before backups.")
                 action = request["action"]
-                if action == "export":
+                if action in REMOTE_PHASES:
+                    if self.remote is None:
+                        raise ValueError("Remote backups are unavailable.")
+                    result = None
+                    if action == "webdav-save":
+                        config = open_settings(request["settings"], self.token, request["id"] + ":" + action)
+                        self.remote.save(config)
+                        config = None
+                    elif action == "webdav-test":
+                        result = self.remote.test(request["target_id"])
+                    elif action == "webdav-run":
+                        result = self.remote.run(trigger="manual")
+                        self.sync_transfers()
+                    else:
+                        result = self.remote.retry(request["run_id"])
+                        self.sync_transfers()
+                    self.remote_finished(result)
+                elif action == "export":
                     from .backup_archive import open_secret
                     password = open_secret(request["secret"], self.token, request["id"] + ":export")
                     entry = self.controller.export(password, request["destination"])
@@ -208,6 +254,7 @@ class BackupDaemon:
                             shutil.copyfileobj(source, target, 1024 * 1024)
                         private_archive.chmod(0o600)
                         plan = self.controller.inspect(private_archive, password)
+                        self.plan_expires = time.time() + 3600
                     finally:
                         password = None
                         archive.unlink(missing_ok=True)
@@ -217,6 +264,8 @@ class BackupDaemon:
                         "files": plan["file_count"], "bytes": plan["total_size"], "target_has_data": plan["requires_overwrite"],
                         "warnings": plan["warnings"], "path_check": "passed"}, result=None)
                 elif action == "restore":
+                    if self.remote is not None:
+                        self.remote.pause()
                     self._updater_stop()
                     restart_updater = True
                     result = self.controller.restore(request["plan_id"], confirm_source_stopped=request["confirm_source_stopped"], overwrite=request["overwrite"])
@@ -228,6 +277,7 @@ class BackupDaemon:
             from .daemon import _pending_recovery
             self.fail(error, recovery=_pending_recovery(self.private))
         finally:
+            self.remote_report()
             if restart_updater:
                 try:
                     self.refresh_token()
@@ -253,6 +303,15 @@ class BackupDaemon:
         elif action == "restore":
             keys |= {"plan_id", "confirm_source_stopped", "overwrite"}
             valid = isinstance(value.get("plan_id"), str) and bool(ID.fullmatch(value["plan_id"])) and value.get("confirm_source_stopped") is True and type(value.get("overwrite")) is bool
+        elif action == "webdav-save":
+            keys |= {"settings"}
+            valid = isinstance(value.get("settings"), str) and len(value["settings"]) <= 90000
+        elif action in {"webdav-test", "webdav-retry"}:
+            key = "target_id" if action == "webdav-test" else "run_id"
+            keys.add(key)
+            valid = isinstance(value.get(key), str) and bool(ID.fullmatch(value[key]))
+        elif action == "webdav-run":
+            valid = True
         else:
             return False
         return set(value) == keys and valid and ("secret" not in keys or isinstance(value.get("secret"), str) and len(value["secret"]) <= 4096)
@@ -273,7 +332,7 @@ class BackupDaemon:
         for path in sorted(self.ipc.glob("request-*.json"))[:64]:
             try:
                 identifier = path.name[8:-5]
-                request = verify(read_json(path, 8192), self.token)
+                request = verify(read_json(path, 131072), self.token)
                 if not self.valid(request, identifier) or identifier in self.recent:
                     continue
                 self.recent = {k: v for k, v in self.recent.items() if type(v) in (int, float) and time.time() - v < 600}
@@ -281,7 +340,9 @@ class BackupDaemon:
                 atomic_json(self.private / "recent.json", self.recent)
                 if self.state.get("active") or self.state.get("recovery_required") or self.worker and self.worker.is_alive():
                     continue
-                phase = {"export": "exporting", "inspect": "inspecting", "restore": "restoring"}[request["action"]]
+                phase = {"export": "exporting", "inspect": "inspecting", "restore": "restoring", **REMOTE_PHASES}[request["action"]]
+                if request["action"] != "restore":
+                    self.state.pop("plan", None)
                 self.publish(phase=phase, active=True, error=None, result=None, request_id=identifier)
                 self.worker = threading.Thread(target=self.job, args=(request,), daemon=True)
                 self.worker.start()
@@ -290,6 +351,35 @@ class BackupDaemon:
             finally:
                 safe_path(path).unlink(missing_ok=True)
 
+    def scheduled_job(self):
+        try:
+            with FileLock(self.operation_lock):
+                from .daemon import _pending_recovery
+                if _pending_recovery(self.runtime / "updates/private") or _pending_recovery(self.private):
+                    self.publish(phase="idle", active=False)
+                    return
+                result = self.remote.run(trigger="scheduled")
+                self.sync_transfers()
+                self.remote_finished(result)
+        except BlockingIOError:
+            self.publish(phase="idle", active=False)
+        except Exception as error:
+            from .daemon import _pending_recovery
+            self.fail(error, recovery=_pending_recovery(self.private))
+        finally:
+            self.schedule_after = time.monotonic() + 60
+            self.remote_report()
+
+    def schedule_once(self):
+        if (self.exit_requested or self.remote is None or self.state.get("active") or self.state.get("recovery_required")
+                or self.worker and self.worker.is_alive() or time.monotonic() < self.schedule_after
+                or self.state.get("plan") and time.time() < self.plan_expires):
+            return
+        if self.remote.due():
+            self.publish(phase="remote_backup", active=True, error=None, result=None, plan=None, request_id=None)
+            self.worker = threading.Thread(target=self.scheduled_job, daemon=True)
+            self.worker.start()
+
     def serve(self):
         with FileLock(self.private / "daemon.lock"):
             self.publish()
@@ -297,6 +387,7 @@ class BackupDaemon:
             cleanup_at = 0
             while not self.exit_requested:
                 self.run_once()
+                self.schedule_once()
                 if self.controller is not None and time.monotonic() >= cleanup_at and not self.state.get("active"):
                     try:
                         with FileLock(self.operation_lock):

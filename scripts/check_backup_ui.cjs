@@ -40,13 +40,17 @@ const { chromium } = require("playwright");
     page.on("pageerror", error => errors.push(error.message));
     let revision = 1;
     const token = () => "backup-fixture-token-" + revision;
-    let state = { enabled: false, phase: "idle", active: false, backups: [] };
+    let state = { enabled: false, phase: "idle", active: false, backups: [], webdav: {
+      config: { enabled: false, time: "03:00", utc_offset_minutes: 480, keep_last: 7, password_set: false, destinations: [], namespace: "fixture" },
+      next_run: null, last_run: null, test_result: null, history: []
+    } };
     const mutations = [];
     let getFailures = 0;
     let abortRestore = false;
     let getCount = 0;
     let staleReads = 0;
     let staleState = null;
+    let webdavSaves = 0;
     const plan = {
       plan_id: "c".repeat(32), version: "0.7.0-alpha", components: { astrbot: "4.25.1", qwenpaw: "2.2.1", napcat: "4.18.33" },
       files: 128, bytes: 1024 * 1024 * 8, target_has_data: true, path_check: "passed",
@@ -96,6 +100,38 @@ const { chromium } = require("playwright");
         state = { ...state, request_id: requestId, phase: "restoring", active: true, step: "restoring" };
         getFailures = 2;
         if (abortRestore) return route.abort("connectionreset");
+      } else if (pathname.endsWith("/webdav-save")) {
+        webdavSaves++;
+        assert.equal(body.enabled, true);
+        assert.equal(body.time, "04:15");
+        assert.equal(body.utc_offset_minutes, 480);
+        assert.equal(body.keep_last, 7);
+        assert.equal(body.destinations.length, 2);
+        assert.equal(body.password, webdavSaves === 1 ? "WebdavArchivePassword-fixture" : "");
+        for (const target of body.destinations) {
+          assert.match(target.id, /^[0-9a-f]{32}$/);
+          assert.equal(target.password, webdavSaves === 1 ? "WebdavAppPassword-fixture" : "");
+          assert.match(target.url, /^https:\/\/cloud[12]\.invalid\/dav\/backup\/$/);
+        }
+        staleState = JSON.parse(JSON.stringify(state)); staleReads = 1;
+        state = { ...state, request_id: requestId, phase: "completed", active: false, result: null, webdav: {
+          ...state.webdav, config: { ...body, password: undefined, password_set: true, destinations: body.destinations.map(target => ({ ...target, password: undefined, password_set: true })) },
+          next_run: 1792786500
+        } };
+      } else if (pathname.endsWith("/webdav-test")) {
+        assert.equal(body.target_id, state.webdav.config.destinations[0].id);
+        state = { ...state, request_id: requestId, phase: "completed", active: false, webdav: { ...state.webdav, test_result: { target_id: body.target_id, ok: true } } };
+      } else if (pathname.endsWith("/webdav-run")) {
+        assert.deepEqual(body, {});
+        state = { ...state, request_id: requestId, phase: "remote_backup", active: true, webdav: { ...state.webdav, last_run: {
+          id: "9".repeat(32), trigger: "manual", status: "running", started_at: 1792786500, finished_at: null,
+          targets: state.webdav.config.destinations.map(target => ({ id: target.id, name: target.name, status: "uploading" }))
+        } } };
+      } else if (pathname.endsWith("/webdav-retry")) {
+        assert.deepEqual(body, { run_id: "9".repeat(32) });
+        state = { ...state, request_id: requestId, phase: "completed", active: false, webdav: { ...state.webdav, last_run: {
+          ...state.webdav.last_run, status: "completed", targets: state.webdav.last_run.targets.map(target => ({ ...target, status: "completed", error: undefined }))
+        } } };
       } else throw new Error("Unexpected backup mutation");
       return route.fulfill({ status: 202, contentType: "application/json", body: JSON.stringify({ request_id: requestId }) });
     });
@@ -120,7 +156,7 @@ const { chromium } = require("playwright");
     await page.keyboard.press("ArrowRight");
     assert.equal(await page.locator("#backup-tab-import").getAttribute("aria-selected"), "true");
     await page.keyboard.press("End");
-    assert.equal(await page.locator("#backup-tab-list").getAttribute("aria-selected"), "true");
+    assert.equal(await page.locator("#backup-tab-webdav").getAttribute("aria-selected"), "true");
     await page.keyboard.press("Home");
     assert.equal(await page.locator("#backup-tab-export").getAttribute("aria-selected"), "true");
     await page.getByLabel("备份密码", { exact: true }).first().fill("short");
@@ -260,9 +296,111 @@ const { chromium } = require("playwright");
     const getsAfterClose = getCount;
     await page.waitForTimeout(2300);
     assert.equal(getCount, getsAfterClose, "An idle, closed backup dialog must stop polling");
+    assert.equal(mutations.length, 4, "Only explicit export, upload, inspect, and restore were sent before WebDAV actions");
+    await page.setViewportSize({ width: 1440, height: 960 });
+    await page.locator("#backup-toggle").click();
+    await page.locator("#backup-tab-webdav").click();
+    assert.equal(await page.locator("#backup-webdav-enabled").isChecked(), false, "Scheduling is opt-in");
+    assert.equal(await page.locator("#backup-webdav-destinations fieldset").count(), 0, "No real storage is preconfigured");
+    await page.locator("#backup-webdav-add:not([disabled])").click();
+    await page.locator("#backup-webdav-add").click();
+    const targets = page.locator("#backup-webdav-destinations fieldset");
+    for (let index = 0; index < 2; index++) {
+      const card = targets.nth(index);
+      await card.locator('[data-field="name"]').fill(index ? "异地备份" : "<img src=x onerror=alert(1)>");
+      await card.locator('[data-field="url"]').fill("https://cloud" + (index + 1) + ".invalid/dav/backup/");
+      await card.locator('[data-field="username"]').fill("fixture-account");
+      await card.locator('[data-field="password"]').fill("WebdavAppPassword-fixture");
+    }
+    await page.locator("#backup-webdav-enabled").check();
+    await page.locator("#backup-webdav-time").fill("04:15");
+    assert.equal(await page.locator("#backup-webdav-save").isDisabled(), true);
+    await page.locator("#backup-webdav-password").fill("WebdavArchivePassword-fixture");
+    await page.locator("#backup-webdav-confirm").fill("mismatch-fixture");
+    assert.equal(await page.locator("#backup-webdav-save").isDisabled(), true);
+    await page.locator("#backup-webdav-confirm").fill("WebdavArchivePassword-fixture");
+    await targets.first().locator('[data-field="url"]').fill("http://cloud1.invalid/dav/");
+    assert.equal(await page.locator("#backup-webdav-save").isDisabled(), true, "Remote credentials require HTTPS");
+    await targets.first().locator('[data-field="url"]').fill("https://cloud1.invalid/dav/backup/");
+    const getsBeforeDraft = getCount;
+    await page.waitForFunction(() => document.getElementById("backup-webdav-dirty").hidden === false);
+    await page.waitForTimeout(2300);
+    assert.ok(getCount > getsBeforeDraft);
+    assert.equal(await page.locator("#backup-webdav-time").inputValue(), "04:15", "Polling must preserve edited schedule");
+    assert.equal(await targets.first().locator('[data-field="password"]').inputValue(), "WebdavAppPassword-fixture", "Polling must preserve unsaved password until submit/close");
+    await page.locator("#backup-webdav-save:not([disabled])").click();
+    assert.equal(await page.locator("#backup-webdav-password").inputValue(), "");
+    assert.equal(await targets.first().locator('[data-field="password"]').inputValue(), "");
+    assert.equal(await targets.count(), 2, "An old GET must not replace the submitted destination form");
+    await page.locator("#backup-webdav-dirty[hidden]").waitFor({ state: "attached" });
+    assert.equal(await targets.count(), 2);
+    assert.equal(await targets.first().locator('[data-field="password"]').getAttribute("placeholder"), "已保存，留空保留原密码");
+    assert.match(await page.locator("#backup-webdav-next").textContent(), /下次自动备份.*UTC\+08:00/);
+    await targets.first().locator('[data-field="url"]').fill("https://different-cloud.invalid/dav/");
+    assert.equal(await page.locator("#backup-webdav-save").isDisabled(), true, "Changing a destination cannot silently reuse its saved credential");
+    assert.match(await page.locator("#backup-webdav-validation").textContent(), /重新填写应用密码/);
+    await page.locator("#backup-webdav-reset").click();
+    await targets.first().locator('[data-action="test"]:not([disabled])').click();
+    await page.locator("#backup-webdav-test-result").filter({ hasText: "测试通过" }).waitFor();
+    assert.equal(await page.locator("#backup-webdav-test-result img").count(), 0);
+    await page.locator("#backup-webdav-run:not([disabled])").click();
+    await page.locator("#backup-message").filter({ hasText: "正在加密备份并上传" }).waitFor();
+    assert.equal(await page.locator("#backup-export").isDisabled(), true, "Remote jobs share the backup operation gate");
+    state = { ...state, phase: "completed", active: false, webdav: { ...state.webdav, last_run: {
+      ...state.webdav.last_run, backup_id: "8".repeat(32), status: "partial", finished_at: 1792786560,
+      targets: state.webdav.last_run.targets.map((target, index) => ({ ...target, status: index ? "failed" : "completed", error: index ? "raw password=PRIVATE_TOKEN_SHOULD_NOT_DISPLAY" : undefined }))
+    } } };
+    await page.locator("#backup-webdav-retry:not([hidden]):not([disabled])").waitFor();
+    assert.match(await page.locator("#backup-webdav-run-summary").textContent(), /部分网盘失败/);
+    assert.equal(await page.locator("#backup-webdav-results [data-state='completed']").count(), 1);
+    assert.equal(await page.locator("#backup-webdav-results [data-state='failed']").count(), 1);
+    assert.equal(await page.locator("#backup-webdav-results img").count(), 0);
+    assert.ok(!(await page.locator("#backup-dialog").textContent()).includes("PRIVATE_TOKEN_SHOULD_NOT_DISPLAY"), "Raw upstream errors never enter the page");
+    if (process.env.BUNDLE_SCREENSHOTS) {
+      await page.locator("#backup-dialog").evaluate(element => { element.scrollTop = 0; });
+      await page.screenshot({ path: path.join(process.env.BUNDLE_SCREENSHOTS, "backup-webdav-desktop-test.png") });
+      await page.locator("#backup-webdav-retry").scrollIntoViewIfNeeded();
+      await page.screenshot({ path: path.join(process.env.BUNDLE_SCREENSHOTS, "backup-webdav-results-desktop-test.png") });
+    }
+    await page.setViewportSize({ width: 390, height: 844 });
+    assert.equal(await page.locator("#backup-dialog").evaluate(element => element.scrollWidth <= element.clientWidth), true);
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+    if (process.env.BUNDLE_SCREENSHOTS) {
+      await page.locator("#backup-dialog").evaluate(element => { element.scrollTop = 0; });
+      await page.screenshot({ path: path.join(process.env.BUNDLE_SCREENSHOTS, "backup-webdav-mobile-test.png") });
+      await page.locator("#backup-webdav-retry").scrollIntoViewIfNeeded();
+      await page.screenshot({ path: path.join(process.env.BUNDLE_SCREENSHOTS, "backup-webdav-results-mobile-test.png") });
+    }
+    await page.locator("#backup-webdav-retry").click();
+    await page.locator("#backup-webdav-run-summary").filter({ hasText: "全部完成" }).waitFor();
+    assert.equal(mutations.filter(item => item.pathname.endsWith("/webdav-run")).length, 1, "Retry reuses the existing archive instead of generating another backup");
+    await targets.nth(1).locator('[data-action="remove"]').click();
+    assert.equal(await targets.count(), 1, "Removing a target updates the draft");
+    await page.locator("#backup-webdav-reset").click();
+    assert.equal(await targets.count(), 2, "Cancelling edits restores the saved targets");
+    await targets.first().locator('[data-field="name"]').fill("主备份");
+    await targets.nth(1).locator('[data-field="enabled"]').uncheck();
+    await page.locator("#backup-webdav-save:not([disabled])").click();
+    await page.locator("#backup-webdav-dirty[hidden]").waitFor({ state: "attached" });
+    assert.equal(await targets.first().locator('[data-field="name"]').inputValue(), "主备份");
+    assert.equal(await targets.nth(1).locator('[data-field="enabled"]').isChecked(), false);
+    assert.equal(await targets.first().locator('[data-field="password"]').inputValue(), "", "Saved passwords are never repopulated");
+    await targets.first().locator('[data-field="password"]').fill("close-clears-webdav-password");
+    await page.locator("#backup-webdav-password").fill("close-clears-archive-password");
+    await page.locator("#backup-webdav-confirm").fill("close-clears-archive-password");
+    await page.evaluate(() => {
+      document.getElementById("backup-dialog").addEventListener("cancel", () => {
+        window.webdavSynchronousClear = [...document.querySelectorAll('#backup-webdav-form input[type="password"]')].every(input => input.value === "");
+      });
+    });
+    await page.keyboard.press("Escape");
+    assert.equal(await page.evaluate(() => window.webdavSynchronousClear), true);
+    assert.equal(await page.locator("#backup-webdav-password").inputValue(), "");
+    assert.equal(await targets.first().locator('[data-field="password"]').inputValue(), "");
+    assert.equal(await page.evaluate(() => localStorage.length + sessionStorage.length), 0);
     assert.equal(errors.length, 0, errors.join("\n"));
-    assert.equal(mutations.length, 4, "Only explicit export, upload, inspect, and restore were sent");
-    console.log("PASS: separate backup dialog; desktop/mobile; accessible tabs and focus; password validation/generation/clearing; no browser secret storage; export and safe current-token downloads; multipart upload; inspect without restore; explicit source-stop and overwrite gates; safe metadata; no POST retry on disconnect; active-only background polling; native drafts retained; recovery block; validated-path gate.");
+    assert.equal(mutations.length, 9, "Only two explicit WebDAV saves, one test, one run and one retry were sent");
+    console.log("PASS: separate backup dialog; desktop/mobile; accessible tabs and focus; password validation/generation/clearing; no browser secret storage; export and safe current-token downloads; multipart upload; inspect without restore; explicit source-stop and overwrite gates; safe metadata; no POST retry on disconnect; active-only background polling; native drafts retained; recovery block; validated-path gate; opt-in WebDAV schedule and multiple destinations; editing survives polling; save acknowledgement before form refresh; secret clearing; per-target partial failures; safe raw-error handling; retry existing archive.");
   } finally {
     if (browser) await browser.close();
     await new Promise(resolve => server.close(resolve));

@@ -15,21 +15,38 @@ import uuid
 
 from aiohttp import BodyPartReader, web
 from bundle_updater.common import atomic_json, read_json, safe_path, sign, verify
+from bundle_updater.webdav_protocol import REMOTE_PHASES, seal_settings, valid_settings
+from .webdav import public_status as webdav_public_status
 
 MAX_ARCHIVE = 8 * 1024**3
 ID = re.compile(r"[0-9a-f]{32}\Z")
 VERSION = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?\Z")
 MESSAGES = {
+    "remote_config": "正在保存自动备份设置。",
+    "remote_testing": "正在测试网盘连接与备份读写权限。",
+    "remote_backup": "正在生成加密备份并上传到已启用的网盘。",
+    "remote_retry": "正在重试失败网盘，使用已有备份文件。",
     "idle": "可以导出加密备份，或上传已有备份检查恢复。",
     "exporting": "正在暂停服务、保存一致快照并加密，完成后会恢复服务。",
     "inspecting": "正在解密并检查备份、组件版本和目标路径，尚未覆盖当前数据。",
     "ready_to_restore": "备份检查通过。请确认旧服务器已停止，再开始恢复。",
     "restoring": "正在保存当前数据并恢复备份，入口重启后会自动重新连接。",
-    "completed": "操作完成，服务检查通过。",
+    "completed": "操作已完成，请查看下方结果。",
     "failed": "操作未完成。请检查备份密码、可用空间和本机备份诊断记录。",
     "rolled_back": "恢复后的服务未通过检查，已恢复本次操作前的数据。",
 }
 ERRORS = {
+    "webdav_config_invalid": "自动备份设置不可用，请检查网盘配置；本机私有设置损坏时需先修复。",
+    "webdav_settings_pending": "设置保存被中断，自动执行已暂停。请检查磁盘空间，再次保存或通过启动脚本重启备份服务。",
+    "webdav_operation_incomplete": "部分操作未完成，请查看下方每个网盘的结果；可以重试失败网盘。",
+    "webdav_credentials_required": "新增网盘或更改地址、账号后，请重新填写应用密码。",
+    "webdav_setup_required": "请先设置备份加密密码，并启用至少一个网盘。",
+    "webdav_url_invalid": "请填写 HTTPS WebDAV 地址，不能包含账号、密码或查询参数。",
+    "webdav_target_changed": "网盘地址或账号已改变，不能重试旧任务；请发起新的备份。",
+    "webdav_target_unknown": "该网盘已删除，请检查保存的设置。",
+    "webdav_archive_unavailable": "原加密备份文件已不可用，请重新备份。",
+    "webdav_retry_unavailable": "当前没有可重试的备份文件，请检查最近一次任务。",
+    "webdav_run_unknown": "仅支持重试最近一次失败的任务，请刷新状态。",
     "component_version_mismatch": "三套组件版本与备份不一致，请安装匹配版本后再导入。",
     "architecture_mismatch": "备份与新服务器的 Docker CPU 架构不同，暂不支持自动迁移。",
     "restore_plan_expired": "恢复检查已过期，请重新上传检查。",
@@ -88,6 +105,9 @@ class BackupAPI:
             if type(stamp) not in (int, float) or not math.isfinite(stamp) or not 0 <= time.time() - stamp <= 20 or phase not in MESSAGES:
                 return result
             result.update(enabled=value.get("ready") is True, phase=phase, active=value.get("active") is True, message=MESSAGES[phase])
+            remote = webdav_public_status(value.get("webdav"))
+            if remote is not None:
+                result["webdav"] = remote
             request_id = value.get("request_id")
             if isinstance(request_id, str) and re.fullmatch(r"[0-9a-f-]{36}", request_id):
                 result["request_id"] = request_id
@@ -208,7 +228,7 @@ class BackupAPI:
             return web.FileResponse(target, headers={"Content-Type": "application/octet-stream", "Content-Disposition": 'attachment; filename="astrbot-qwenpaw-' + identifier + '.aqbackup"',
                                                     "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
         action = request.path.rsplit("/", 1)[-1]
-        if action not in {"export", "upload", "inspect", "restore"}:
+        if action not in {"export", "upload", "inspect", "restore"} | set(REMOTE_PHASES):
             raise web.HTTPNotFound()
         if request.method != "POST":
             raise web.HTTPMethodNotAllowed(request.method, ["POST"])
@@ -223,17 +243,20 @@ class BackupAPI:
             if action == "upload":
                 return await self.upload(request)
             try:
-                if request.content_type != "application/json" or (request.content_length is not None and request.content_length > 8192):
+                limit = 65536 if action == "webdav-save" else 8192
+                if request.content_type != "application/json" or (request.content_length is not None and request.content_length > limit):
                     return response({"message": "备份请求无效。"}, 400)
                 raw = bytearray()
-                while len(raw) <= 8192:
-                    block = await request.content.read(min(4096, 8193 - len(raw)))
+                while len(raw) <= limit:
+                    block = await request.content.read(min(4096, limit + 1 - len(raw)))
                     if not block:
                         break
                     raw.extend(block)
-                body = json.loads(raw, object_pairs_hook=unique_json_object) if len(raw) <= 8192 else None
+                body = json.loads(raw, object_pairs_hook=unique_json_object) if len(raw) <= limit else None
             except (ValueError, UnicodeError):
                 body = None
+            if action in REMOTE_PHASES:
+                return self.remote_request(action, body)
             keys = {"export": {"password", "destination"}, "inspect": {"upload_id", "password"}, "restore": {"plan_id", "confirm_source_stopped", "overwrite"}}[action]
             if not isinstance(body, dict) or set(body) != keys:
                 return response({"message": "备份请求无效。"}, 400)
@@ -273,3 +296,27 @@ class BackupAPI:
             self.pending_id = identifier
             self.pending_phase = {"export": "exporting", "inspect": "inspecting", "restore": "restoring"}[action]
             return response({"request_id": identifier, "active": True}, 202)
+
+    def remote_request(self, action, body):
+        identifier = str(uuid.uuid4())
+        payload = {"id": identifier, "created": time.time(), "action": action}
+        if action == "webdav-save":
+            if not valid_settings(body):
+                return response({"message": "请检查备份时间、保留份数和网盘配置；最多添加 10 个网盘。"}, 400)
+            payload["settings"] = seal_settings(body, self.token, identifier + ":" + action)
+        elif action == "webdav-run":
+            if body != {}:
+                return response({"message": "自动备份请求无效。"}, 400)
+        else:
+            key = "target_id" if action == "webdav-test" else "run_id"
+            if not isinstance(body, dict) or set(body) != {key} or not isinstance(body[key], str) or not ID.fullmatch(body[key]):
+                return response({"message": "请选择已保存的网盘或备份记录。"}, 400)
+            payload[key] = body[key]
+        try:
+            atomic_json(self.ipc / ("request-" + identifier + ".json"), sign(payload, self.token), 0o644)
+        except (ValueError, OSError):
+            return response({"message": "备份服务暂时无法接收请求。"}, 503)
+        self.pending_until = time.monotonic() + 5
+        self.pending_id = identifier
+        self.pending_phase = REMOTE_PHASES[action]
+        return response({"request_id": identifier, "active": True}, 202)

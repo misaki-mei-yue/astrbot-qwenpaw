@@ -182,6 +182,27 @@ class BackupControllerTests(unittest.TestCase):
         self.assertNotIn("ownership-secret", json.dumps(reports + source.list_backups()))
         self.assertEqual(self.chat(source), "source original chat")
 
+    def test_retention_deletes_only_selected_catalog_archive_and_transfer(self):
+        source, _, _ = self.fixture("retention")
+        first = source.export(PASSWORD)
+        second = source.export(PASSWORD)
+        transfers = source.runtime / "backups/ipc/transfers"
+        transfers.mkdir(parents=True, exist_ok=True)
+        transfer = transfers / (first["id"] + ".aqbackup")
+        transfer.write_bytes(Path(first["archive_path"]).read_bytes())
+        unrelated = source.private / "archives" / ("f" * 32 + ".aqbackup")
+        unrelated.write_bytes(b"unrelated fixture")
+        source.delete_archive("f" * 32)
+        self.assertTrue(unrelated.exists())
+        source.delete_archive(first["id"])
+        self.assertFalse(Path(first["archive_path"]).exists())
+        self.assertFalse(transfer.exists())
+        self.assertEqual([row["id"] for row in source.list_backups()], [second["id"]])
+        source.delete_archive(first["id"])
+        with self.assertRaises(BackupError):
+            source.delete_archive("../outside")
+        self.assertTrue(source.get_archive(second["id"]).is_file())
+
     def test_cross_root_restore_sqlite_env_all_keys_and_bind_inodes(self):
         source, _, _ = self.fixture("source")
         target, docker, _ = self.fixture("target", layout="linux")
