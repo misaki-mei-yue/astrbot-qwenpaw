@@ -52,7 +52,7 @@ def inspect_jobs():
     health=get('/api/healthz')
     agents=health.get('agents_loaded')
     if health.get('status')!='ok' or not isinstance(agents,list) or not 1<=len(agents)<=128: raise ValueError()
-    if any(not isinstance(a,str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,127}',a) for a in agents): raise ValueError()
+    if any(not isinstance(a,str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,127}',a) for a in agents): raise ValueError()
     if len(set(agents))!=len(agents): raise ValueError()
     for agent in agents:
         jobs=get('/api/agents/'+urllib.parse.quote(agent,safe='')+'/cron/jobs')

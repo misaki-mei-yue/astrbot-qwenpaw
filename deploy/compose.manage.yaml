@@ -1,0 +1,25 @@
+# Full Linux installations only; start.sh supplies both Compose files.
+services:
+  gateway:
+    build:
+      context: ${PROJECT_SOURCE:?}
+      dockerfile: bundle_gateway/Dockerfile
+    image: astrbot-qwenpaw-gateway:local
+    init: true
+    restart: unless-stopped
+    environment:
+      QWENPAW_RUNTIME_INTERNAL_TOKEN: ${QWENPAW_RUNTIME_INTERNAL_TOKEN:?}
+      QWENPAW_AGENT_ID: ${QWENPAW_AGENT_ID:-default}
+      BUNDLE_PORT: "18080"
+      BUNDLE_BACKUP_IPC: /bundle-backups
+    volumes:
+      - ${INSTALL_ROOT:?}/backups/ipc:/bundle-backups
+    ports:
+      - "127.0.0.1:18080:18080"
+    read_only: true
+    tmpfs: [/tmp:rw,noexec,nosuid,size=32m]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 192m
+    pids_limit: 128
+    networks: [bridge]

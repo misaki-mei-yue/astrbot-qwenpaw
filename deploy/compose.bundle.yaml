@@ -127,8 +127,10 @@ services:
       QWENPAW_AGENT_ID: ${QWENPAW_AGENT_ID:-default}
       BUNDLE_PORT: '18080'
       BUNDLE_UPDATE_IPC: /bundle-updates
+      BUNDLE_BACKUP_IPC: /bundle-backups
     volumes:
     - ${INSTALL_ROOT:?}/updates/ipc:/bundle-updates
+    - ${INSTALL_ROOT:?}/backups/ipc:/bundle-backups
     ports:
     - 127.0.0.1:18080:18080
     networks:

@@ -49,7 +49,7 @@ PRIVATE_PARTS = frozenset({
 PRIVATE_SUFFIXES = frozenset({
     ".db", ".sqlite", ".sqlite3", ".log", ".key", ".pem", ".pfx", ".p12",
     ".bak", ".before", ".lock", ".wal", ".shm", ".pyc", ".pyo", ".zip",
-    ".tar", ".gz", ".tgz", ".7z",
+    ".tar", ".gz", ".tgz", ".7z", ".aqbackup",
 })
 PUBLIC_ROOT_FILES = frozenset({
     ".dockerignore", ".env.example", ".gitattributes", ".gitignore",

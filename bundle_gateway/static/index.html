@@ -15,7 +15,7 @@
       <button role="tab" id="tab-qwenpaw" aria-controls="panel-qwenpaw" aria-selected="false" tabindex="-1" data-app="qwenpaw"><span class="label">记忆与任务</span><span class="product">QwenPaw</span><span class="dot" aria-hidden="true"></span></button>
       <button role="tab" id="tab-napcat" aria-controls="panel-napcat" aria-selected="false" tabindex="-1" data-app="napcat"><span class="label">QQ 登录</span><span class="product">NapCat</span><span class="dot" aria-hidden="true"></span></button>
     </nav>
-    <div class="rail-footer"><button id="update-toggle" aria-haspopup="dialog"><span aria-hidden="true">↻</span> <span id="update-label">检查更新</span><span id="update-current"></span></button><button id="help-toggle" aria-expanded="false" aria-controls="help">初次使用</button><span>一个入口，三套原生页面</span></div>
+    <div class="rail-footer"><button id="backup-toggle" aria-haspopup="dialog"><span aria-hidden="true">⇩</span> <span id="backup-label">备份与恢复</span></button><button id="update-toggle" aria-haspopup="dialog"><span aria-hidden="true">↻</span> <span id="update-label">检查更新</span><span id="update-current"></span></button><button id="help-toggle" aria-expanded="false" aria-controls="help">初次使用</button><span>一个入口，三套原生页面</span></div>
   </aside>
   <main>
     <header><div><h1 id="page-title">聊天与插件</h1><p id="status" role="status">正在连接本地服务…</p></div><div class="page-actions"><a id="open-native" target="_blank" rel="noopener noreferrer">独立打开</a><button id="refresh">重新加载当前页面</button></div></header>
@@ -42,6 +42,89 @@
     </section>
     <p id="update-error" role="alert" hidden></p>
     <div class="update-actions"><button id="update-check">检查更新</button><button id="update-apply" class="primary" hidden>备份并更新</button><button id="update-reload" class="primary" hidden>刷新界面</button></div>
+  </dialog>
+  <dialog id="backup-dialog" aria-labelledby="backup-title" aria-describedby="backup-description">
+    <div class="backup-heading"><h2 id="backup-title">备份与恢复</h2><button id="backup-close" aria-label="关闭备份与恢复窗口" autofocus>×</button></div>
+    <p id="backup-description">把配置、聊天、记忆和工作文件一起带走。在新服务器导入备份，即可检查并恢复。</p>
+    <div class="backup-tabs" role="tablist" aria-label="备份与恢复操作">
+      <button id="backup-tab-export" role="tab" aria-selected="true" aria-controls="backup-panel-export" data-backup-tab="export">导出备份</button>
+      <button id="backup-tab-import" role="tab" aria-selected="false" aria-controls="backup-panel-import" tabindex="-1" data-backup-tab="import">导入恢复</button>
+      <button id="backup-tab-list" role="tab" aria-selected="false" aria-controls="backup-panel-list" tabindex="-1" data-backup-tab="list">服务器备份</button>
+      <button id="backup-tab-webdav" role="tab" aria-selected="false" aria-controls="backup-panel-webdav" tabindex="-1" data-backup-tab="webdav">自动备份</button>
+    </div>
+    <div id="backup-status" role="status" aria-live="polite" aria-atomic="true"><p id="backup-message">正在连接备份服务…</p><p id="backup-step" hidden></p></div>
+    <progress id="backup-progress" aria-label="备份与恢复进度" hidden></progress>
+    <p id="backup-error" role="alert" hidden></p>
+    <section id="backup-panel-export" class="backup-panel" role="tabpanel" aria-labelledby="backup-tab-export">
+      <p class="backup-note">导出时聊天会短暂停止。请先结束正在进行的任务，保存尚未提交的设置。</p>
+      <form id="backup-export-form" autocomplete="off">
+        <label class="backup-field" for="backup-password">备份密码<input id="backup-password" type="password" autocomplete="new-password" minlength="12" maxlength="1024" required aria-describedby="backup-password-help"></label>
+        <p id="backup-password-help" class="backup-hint">至少 12 个字符。请另行保存密码，忘记后无法解密备份。</p>
+        <div class="backup-password-actions"><label><input id="backup-show-password" type="checkbox"> 显示密码</label><button id="backup-generate" type="button">生成强密码</button></div>
+        <label class="backup-field" for="backup-password-confirm">再次输入密码<input id="backup-password-confirm" type="password" autocomplete="new-password" minlength="12" maxlength="1024" required></label>
+        <label class="backup-field" for="backup-destination">备份保存位置<select id="backup-destination"><option value="server">保存在服务器</option><option value="download">下载到这台电脑</option></select></label>
+        <p id="backup-destination-help" class="backup-hint">本地备份也应再复制一份到其他设备，避免与服务器一起丢失。</p>
+        <div class="backup-actions"><button id="backup-export" class="primary" type="submit">加密并导出</button></div>
+      </form>
+      <div id="backup-export-result" class="backup-result" hidden><p>加密备份已生成。请保存备份和密码，并在新环境验证恢复。</p><a id="backup-download" class="backup-download">下载加密备份</a></div>
+    </section>
+    <section id="backup-panel-import" class="backup-panel" role="tabpanel" aria-labelledby="backup-tab-import" hidden>
+      <p class="backup-note">先上传并检查，再由你确认恢复。恢复前请停止旧服务器，避免重复登录和重复执行定时任务。</p>
+      <form id="backup-import-form" autocomplete="off">
+        <label class="backup-field" for="backup-file">选择加密备份<input id="backup-file" type="file" accept=".aqbackup" required aria-describedby="backup-file-help"></label>
+        <p id="backup-file-help" class="backup-hint">选择导出时生成的 .aqbackup 文件。</p>
+        <label class="backup-field" for="backup-import-password">备份密码<input id="backup-import-password" type="password" autocomplete="off" minlength="12" maxlength="1024" required></label>
+        <div class="backup-actions"><button id="backup-inspect" type="submit">上传并检查</button></div>
+      </form>
+      <section id="backup-plan" aria-label="恢复前检查结果" hidden>
+        <div class="backup-plan-heading"><h3>备份检查通过</h3><button id="backup-change-file" type="button">重新选择备份</button></div>
+        <dl class="backup-summary"><div><dt>组合包版本</dt><dd id="backup-plan-version"></dd></div><div><dt>备份内容</dt><dd id="backup-plan-size"></dd></div><div><dt>安装位置</dt><dd>已检查，将使用当前服务器的安装位置</dd></div></dl>
+        <dl id="backup-components" class="update-components"></dl>
+        <ul id="backup-warnings" class="backup-warnings" hidden></ul>
+        <div class="backup-confirmations"><label><input id="backup-source-stopped" type="checkbox"> 我已停止旧服务器上的三合一服务</label><label id="backup-overwrite-row" hidden><input id="backup-overwrite" type="checkbox"> 我确认替换本机现有配置、聊天、记忆和工作文件</label></div>
+        <p class="backup-hint">恢复会短暂中断服务。完成后请检查模型、定时任务和消息收发；QQ 可能需要重新扫码。</p>
+        <div class="backup-actions"><button id="backup-restore" class="primary" type="button" disabled>确认恢复</button></div>
+      </section>
+      <div id="backup-restore-result" class="backup-result" hidden><p>恢复已完成。刷新页面后，检查记忆、任务和消息收发。</p><button id="backup-reload" type="button" class="primary">刷新界面</button></div>
+    </section>
+    <section id="backup-panel-list" class="backup-panel" role="tabpanel" aria-labelledby="backup-tab-list" hidden>
+      <p class="backup-hint">这里的备份保存在当前服务器。下载到另一台设备，才能在服务器丢失时恢复。</p>
+      <p id="backup-empty">还没有保存在服务器的备份。</p><ul id="backup-list" aria-label="已保存的加密备份"></ul>
+    </section>
+    <section id="backup-panel-webdav" class="backup-panel" role="tabpanel" aria-labelledby="backup-tab-webdav" hidden>
+      <p class="backup-note">每天自动加密备份，并上传到你启用的所有网盘。生成快照时聊天会短暂停止；可以关闭浏览器，但服务器和三合一服务需要保持运行。</p>
+      <form id="backup-webdav-form" autocomplete="off">
+        <label class="backup-inline-check"><input id="backup-webdav-enabled" type="checkbox"> 开启每日自动备份</label>
+        <div class="backup-field-grid">
+          <label class="backup-field" for="backup-webdav-time">每日备份时间<input id="backup-webdav-time" type="time" value="03:00" required></label>
+          <label class="backup-field" for="backup-webdav-offset">时间所在时区<select id="backup-webdav-offset"><option value="480">UTC+08:00（北京时间）</option><option value="0">UTC+00:00</option><option value="540">UTC+09:00</option><option value="60">UTC+01:00</option><option value="120">UTC+02:00</option><option value="330">UTC+05:30</option><option value="-300">UTC−05:00</option><option value="-480">UTC−08:00</option></select></label>
+        </div>
+        <p class="backup-hint">使用固定 UTC 偏移，不会自动切换夏令时。</p>
+        <label class="backup-field" for="backup-webdav-keep">每个网盘保留最近几份自动备份<input id="backup-webdav-keep" type="number" min="1" max="100" step="1" value="7" required></label>
+        <p class="backup-hint">可设置 1–100 份。本机保留同样份数的成功备份，另外最多保留同样份数未传完的备份，超过后自动轮换。只清理本功能生成的旧备份。</p>
+        <label class="backup-field" for="backup-webdav-password">自动备份密码<input id="backup-webdav-password" type="password" autocomplete="new-password" maxlength="1024" aria-describedby="backup-webdav-password-help"></label>
+        <p id="backup-webdav-password-help" class="backup-hint">首次设置至少 12 个字符。密码会受保护地保存在本机，供无人值守备份使用；请另外记下密码，在新 VPS 恢复时仍需要它。</p>
+        <label class="backup-field" for="backup-webdav-confirm">再次输入自动备份密码<input id="backup-webdav-confirm" type="password" autocomplete="new-password" maxlength="1024"></label>
+        <p id="backup-webdav-password-state" class="backup-hint"></p>
+        <div class="backup-webdav-heading"><h3>备份网盘</h3><button id="backup-webdav-add" type="button">＋ 添加网盘</button></div>
+        <p class="backup-hint">填写网盘提供的 HTTPS WebDAV 地址和应用密码。新增网盘或修改地址、账号后，需要重新填写应用密码。每个网盘单独上传，一个失败不影响其他网盘；连接测试会写入并删除一个小测试文件。修改后先保存，再测试连接。</p>
+        <p id="backup-webdav-empty" class="backup-hint">还没有配置网盘。可以添加多个备份位置。</p>
+        <div id="backup-webdav-destinations"></div>
+        <p id="backup-webdav-dirty" class="backup-hint" role="status" hidden>有尚未保存的修改。</p>
+        <p id="backup-webdav-validation" class="backup-hint"></p>
+        <div class="backup-actions"><button id="backup-webdav-reset" type="button">撤销修改</button><button id="backup-webdav-save" class="primary" type="submit">保存设置</button></div>
+      </form>
+      <section class="backup-webdav-activity" aria-labelledby="backup-webdav-activity-title">
+        <h3 id="backup-webdav-activity-title">备份状态</h3>
+        <p id="backup-webdav-next" class="backup-hint">自动备份尚未开启。</p>
+        <p id="backup-webdav-test-result" role="status" hidden></p>
+        <p id="backup-webdav-run-summary">还没有自动备份记录。</p>
+        <ul id="backup-webdav-results" class="backup-webdav-results" aria-label="各网盘备份结果"></ul>
+        <div class="backup-actions"><button id="backup-webdav-retry" type="button" hidden>重试失败网盘</button><button id="backup-webdav-run" type="button">立即备份到网盘</button></div>
+        <p class="backup-hint">立即备份使用已保存的设置；重试会继续上传原备份包，不会重新停止聊天生成备份。</p>
+        <details id="backup-webdav-history"><summary>最近运行记录</summary><ul class="backup-webdav-history-list"></ul></details>
+      </section>
+    </section>
   </dialog>
 </body>
 </html>
