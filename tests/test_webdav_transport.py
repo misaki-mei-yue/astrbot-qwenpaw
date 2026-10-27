@@ -232,20 +232,42 @@ class TransportTests(unittest.TestCase):
         move = next(r for r in self.server.requests if r.method == "MOVE")
         self.assertEqual(move.headers["Overwrite"], "F")
         self.assertEqual(move.headers["Destination"], "https://dav.example.test" + final)
-        self.assertEqual([r.method for r in self.server.requests][-4:], ["PUT", "HEAD", "MOVE", "HEAD"])
+        self.assertEqual([r.method for r in self.server.requests][-4:], ["PUT", "PROPFIND", "MOVE", "PROPFIND"])
         self.assertFalse(any(r.method == "GET" for r in self.server.requests))
 
-    def test_head_not_supported_uses_bounded_depth_zero_propfind(self):
+    def test_upload_uses_bounded_depth_zero_file_properties(self):
         self.server.head_supported = False
         result = self.client.upload(self.archive, NAMESPACE, FILENAME)
         self.assertEqual(result["size"], len(self.payload))
         requests = [r for r in self.server.requests if r.method == "PROPFIND"]
         self.assertEqual(len(requests), 3)
         self.assertTrue(all(r.headers["Depth"] == "0" for r in requests))
+        self.assertFalse(any(r.method == "HEAD" for r in self.server.requests))
 
-    def test_head_501_falls_back(self):
-        self.server.hook = lambda r: Response(501) if r.method == "HEAD" else None
-        self.assertEqual(self.client.upload(self.archive, NAMESPACE, FILENAME)["size"], len(self.payload))
+    def test_zero_or_wrong_head_length_and_unsupported_head_do_not_break_upload(self):
+        for status, length in [(200, 0), (200, 1), (405, 0), (501, 0)]:
+            with self.subTest(status=status, length=length):
+                self.server = Server()
+                self.client = WebDAVClient(TARGET, connection_factory=self.server.connection)
+                response = Response(status, headers={"Content-Length": length})
+                self.server.hook = lambda r: response if r.method == "HEAD" else None
+                self.assertEqual(self.client.upload(self.archive, NAMESPACE, FILENAME)["size"], len(self.payload))
+                final = "/storage/" + NAMESPACE + "/" + FILENAME
+                self.assertEqual(self.server.files[final]["size"], len(self.payload))
+                self.assertFalse(any(r.method == "HEAD" for r in self.server.requests))
+
+    def test_file_size_requires_valid_non_collection_dav_metadata(self):
+        path = "/storage/" + FILENAME
+        for size, collection in [(None, False), ("invalid", False), (-1, False),
+                                 ("1.5", False), ("\u0661", False), (12, True)]:
+            with self.subTest(size=size, collection=collection):
+                self.server = Server()
+                self.client = WebDAVClient(TARGET, connection_factory=self.server.connection)
+                self.server.files[path] = {"size": size}
+                if collection:
+                    self.server.directories.add(path)
+                self.assert_code("remote_invalid", lambda: self.client._size(path))
+                self.assertEqual([r.method for r in self.server.requests], ["PROPFIND"])
 
     def test_redirect_never_followed_or_body_read(self):
         response = Response(301, b"credential echo", {"Location": "https://attacker.example/capture"})
@@ -273,7 +295,10 @@ class TransportTests(unittest.TestCase):
             self.assertTrue(self.server.connections[-1].closed)
 
     def test_partial_upload_size_mismatch_is_not_published(self):
-        self.server.hook = lambda r: Response(200, headers={"Content-Length": 1}) if r.method == "HEAD" else None
+        def hook(request):
+            if request.method == "PROPFIND" and ".aq-upload-" in request.path:
+                self.server.files[request.path]["size"] = 1
+        self.server.hook = hook
         self.assert_code("remote_size", lambda: self.client.upload(self.archive, NAMESPACE, FILENAME))
         self.assertFalse(any(r.method == "MOVE" for r in self.server.requests))
         self.assertEqual(self.server.files, {})
@@ -282,8 +307,8 @@ class TransportTests(unittest.TestCase):
 
     def test_final_size_mismatch_is_not_reported_successful(self):
         def hook(request):
-            if request.method == "HEAD" and request.path.endswith(FILENAME):
-                return Response(200, headers={"Content-Length": 1})
+            if request.method == "PROPFIND" and request.path.endswith(FILENAME):
+                self.server.files[request.path]["size"] = 1
         self.server.hook = hook
         self.assert_code("remote_size", lambda: self.client.upload(self.archive, NAMESPACE, FILENAME))
         # Cleanup only touches the unique temporary path, never a potentially

@@ -22,7 +22,7 @@ from typing import Iterable
 import zipfile
 
 
-DEFAULT_VERSION = "0.8.0-alpha"
+DEFAULT_VERSION = "0.8.1-alpha"
 MANIFEST_NAME = "RELEASE-MANIFEST.json"
 PUBLIC_ROOT_FILES = frozenset({
     ".dockerignore", ".env.example", ".gitattributes", ".gitignore",

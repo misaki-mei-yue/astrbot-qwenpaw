@@ -357,14 +357,10 @@ class WebDAVClient:
         return path
 
     def _size(self, path: str) -> int:
-        code, headers, _ = self._request("HEAD", path)
-        value = headers.get("content-length")
-        if code == 200 and value is not None:
-            if not value.isascii() or not value.isdecimal() or len(value) > 12:
-                _fail("remote_invalid")
-            return int(value)
-        if code not in {200, 405, 501}:
-            _fail("remote_invalid")
+        # Some WebDAV services return Content-Length: 0 for HEAD even when the
+        # resource contains data. DAV:getcontentlength describes the stored
+        # resource, so use the same bounded, validated metadata as directory
+        # checks rather than an HTTP representation's length.
         collection, size = self._properties(path)
         if collection or size is None:
             _fail("remote_invalid")
