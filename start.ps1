@@ -340,6 +340,19 @@ function Get-BundleUpdaterScript {
     return $source
 }
 
+function Test-BundleBackupRecoveryPending {
+    param([string]$Journal)
+    Assert-BundleNoLinks $Journal
+    if (-not (Test-Path -LiteralPath $Journal -PathType Leaf)) { return $false }
+    if ((Get-Item -LiteralPath $Journal).Length -gt 2097152) { return $true }
+    try {
+        $encoding = New-Object System.Text.UTF8Encoding($false, $true)
+        $record = [System.IO.File]::ReadAllText($Journal, $encoding) | ConvertFrom-Json
+        return $record.phase -notin @('completed', 'rolled_back', 'aborted')
+    }
+    catch { return $true }
+}
+
 function Invoke-BundleStart {
     param([string]$ProjectRoot, [switch]$NoBrowser, [switch]$BuildQwenPaw, [int]$ReadyTimeoutSeconds = 600)
     $paths = Get-BundlePaths $ProjectRoot -AllowIncomplete
@@ -356,6 +369,12 @@ function Invoke-BundleStart {
     $python = Find-BundlePython
     Wait-BundleEngine $docker $context
     $null = Invoke-BundleChecked $docker @('--context', $context, 'compose', 'version') 'Checking Docker Compose'
+    $backupBootstrap = Join-Path $paths.Root 'scripts\backup_host.py'
+    $backupJournal = Join-Path $paths.Runtime 'backups\private\transaction.json'
+    Assert-BundleNoLinks $backupJournal
+    if (Test-BundleBackupRecoveryPending $backupJournal) {
+        $null = Invoke-BundleChecked $python.File ($python.Prefix + @($backupBootstrap, '--runtime-root', $paths.Runtime, '--', '--ensure', '--root', $paths.Root, '--project', $paths.Project, '--context', $context)) 'Checking interrupted backup recovery' 900
+    }
     if ($hasStableUpdater) {
         # Recover with the private stable helper before importing or executing any
         # live source that may have been only partly installed before a restart.
@@ -368,6 +387,8 @@ function Invoke-BundleStart {
     Write-Host 'Preparing private configuration; existing credentials and data are preserved...'
     $null = Invoke-BundleChecked $python.File ($python.Prefix + @($paths.Prepare, '--mode', 'fresh', '--root', $paths.Runtime)) 'Preparing bundle configuration'
     Assert-BundleRuntime $paths -RequirePrepared
+    Assert-BundleNoLinks $backupBootstrap
+    $null = Invoke-BundleChecked $python.File ($python.Prefix + @($backupBootstrap, '--runtime-root', $paths.Runtime, '--', '--ensure', '--root', $paths.Root, '--project', $paths.Project, '--context', $context)) 'Starting encrypted backup helper' 900
     $updateScript = Get-BundleUpdaterScript $paths
     Assert-BundleNoLinks $updateScript
     $updateArgs = @($updateScript, "--ensure", "--root", $paths.Root, "--project", $paths.Project, "--context", $context)

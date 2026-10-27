@@ -1,0 +1,2 @@
+# Only the host backup helper needs this package. Never install globally automatically.
+cryptography==50.0.2

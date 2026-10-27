@@ -222,6 +222,15 @@ class ComposeTests(unittest.TestCase):
         self.assertEqual(services["napcat"]["image"], "mlikiowa/napcat-docker:v4.18.33")
         self.assertEqual(services["gateway"]["build"]["dockerfile"], "bundle_gateway/Dockerfile")
 
+    def test_bundle_gateway_has_separate_update_and_backup_mailboxes(self):
+        gateway = self.load("compose.bundle.yaml")["services"]["gateway"]
+        self.assertEqual(gateway["volumes"], [
+            "${INSTALL_ROOT:?}/updates/ipc:/bundle-updates",
+            "${INSTALL_ROOT:?}/backups/ipc:/bundle-backups",
+        ])
+        self.assertEqual(gateway["environment"]["BUNDLE_UPDATE_IPC"], "/bundle-updates")
+        self.assertEqual(gateway["environment"]["BUNDLE_BACKUP_IPC"], "/bundle-backups")
+
     def test_source_override_only_changes_qwen_image_and_build_policy(self):
         overlay = self.load("compose.qwenpaw.source.yaml")
         self.assertEqual(set(overlay), {"services"})
@@ -293,10 +302,10 @@ class ComposeTests(unittest.TestCase):
 
 @unittest.skipUnless(shutil.which("docker"), "Docker CLI is optional; Compose parsing needs no daemon")
 class ComposeCLITests(unittest.TestCase):
-    def fixture_env(self, folder):
+    def fixture_env(self, folder, install_root="/opt/bot-combined"):
         path = Path(folder) / ".env"
         path.write_text(
-            "INSTALL_ROOT=/opt/bot-combined\n"
+            f"INSTALL_ROOT={install_root}\n"
             f"PROJECT_SOURCE={ROOT.as_posix()}\n"
             "COMPOSE_PROJECT_NAME=bot-combined-addon\n"
             "BRIDGE_TOKEN=test-only-bridge-not-real-credentials\n"
@@ -313,9 +322,33 @@ class ComposeCLITests(unittest.TestCase):
         for file in files:
             command += ["-f", str(file)]
         command += ["config", "--format", "json"]
-        result = subprocess.run(command, text=True, capture_output=True, timeout=30)
+        result = subprocess.run(command, text=True, encoding="utf-8", capture_output=True, timeout=30)
         self.assertEqual(result.returncode, 0, result.stderr)
         return json.loads(result.stdout)
+
+    def test_bundle_gateway_renders_two_distinct_mailboxes_with_posix_and_windows_paths(self):
+        for install_root in ("/opt/bot-combined", "E:/combined-fixture/runtime"):
+            with self.subTest(install_root=install_root), tempfile.TemporaryDirectory() as folder:
+                env = self.fixture_env(folder, install_root)
+                compose = self.render(env, [ROOT / "deploy/compose.bundle.yaml"], "mailbox-regression-test")
+                gateway = compose["services"]["gateway"]
+                volumes = gateway["volumes"]
+                self.assertEqual(len(volumes), 2)
+                mounts = {item["target"]: item for item in volumes}
+                self.assertEqual(set(mounts), {"/bundle-updates", "/bundle-backups"})
+                for target, relative in (("/bundle-updates", "updates/ipc"), ("/bundle-backups", "backups/ipc")):
+                    mount = mounts[target]
+                    self.assertEqual(mount["type"], "bind")
+                    source = mount["source"].replace("\\", "/")
+                    # Compose on Windows qualifies a POSIX fixture with the
+                    # current drive; Linux can qualify a Windows fixture with
+                    # its project directory. Both must retain exactly one
+                    # source path and its intended container target.
+                    expected = f"{install_root}/{relative}"
+                    self.assertTrue(source.endswith(expected), (source, expected))
+                    self.assertNotIn("/bundle-", source)
+                self.assertEqual(gateway["environment"]["BUNDLE_UPDATE_IPC"], "/bundle-updates")
+                self.assertEqual(gateway["environment"]["BUNDLE_BACKUP_IPC"], "/bundle-backups")
 
     def test_bundle_and_optional_source_pass_cli_with_identical_data_mounts(self):
         with tempfile.TemporaryDirectory() as folder:

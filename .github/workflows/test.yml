@@ -24,6 +24,7 @@ jobs:
           python deploy/prepare.py --mode fresh --root "$RUNNER_TEMP/bot-combined"
           docker compose --env-file "$RUNNER_TEMP/bot-combined/.env" -f deploy/compose.yaml config --quiet
           docker compose --env-file "$RUNNER_TEMP/bot-combined/.env" -f deploy/compose.bundle.yaml config --quiet
+          docker compose --env-file "$RUNNER_TEMP/bot-combined/.env" -f deploy/compose.yaml -f deploy/compose.manage.yaml config --quiet
   windows-launcher:
     runs-on: windows-latest
     steps:
@@ -47,5 +48,8 @@ jobs:
           npm install --prefix "$RUNNER_TEMP/bundle-browser" --no-package-lock playwright@1.62.1
           node "$RUNNER_TEMP/bundle-browser/node_modules/playwright/cli.js" install --with-deps chromium
       - run: node scripts/check_bundle_ui.cjs
+        env:
+          NODE_PATH: ${{ runner.temp }}/bundle-browser/node_modules
+      - run: node scripts/check_backup_ui.cjs
         env:
           NODE_PATH: ${{ runner.temp }}/bundle-browser/node_modules
