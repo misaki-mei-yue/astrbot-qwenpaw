@@ -8,7 +8,7 @@ on:
       version:
         description: 'Version to package (without the v prefix)'
         required: true
-        default: '0.8.0-alpha'
+        default: '0.8.1-alpha'
 
 permissions:
   contents: read
